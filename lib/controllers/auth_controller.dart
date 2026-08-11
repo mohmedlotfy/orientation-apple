@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import '../services/api/auth_api.dart';
 
 class AuthController extends ChangeNotifier {
@@ -52,6 +53,51 @@ class AuthController extends ChangeNotifier {
     }
   }
 
+  /// Sign in with Apple
+  Future<bool> signInWithApple() async {
+    try {
+      loading = true;
+      errorMessage = null;
+      notifyListeners();
+
+      final credential = await SignInWithApple.getAppleIDCredential(
+        scopes: [
+          AppleIDAuthorizationScopes.email,
+          AppleIDAuthorizationScopes.fullName,
+        ],
+      );
+
+      final identityToken = credential.identityToken;
+      if (identityToken == null || identityToken.isEmpty) {
+        throw Exception('Failed to obtain identity token from Apple.');
+      }
+
+      await _authApi.loginWithApple(
+        identityToken: identityToken,
+        userIdentifier: credential.userIdentifier ?? '',
+        authorizationCode: credential.authorizationCode,
+        email: credential.email,
+        firstName: credential.givenName,
+        lastName: credential.familyName,
+      );
+
+      _isLoggedIn = true;
+      loading = false;
+      notifyListeners();
+      return true;
+    } catch (e) {
+      loading = false;
+      if (e is SignInWithAppleAuthorizationException &&
+          e.code == AuthorizationErrorCode.canceled) {
+        errorMessage = null; // Canceled by user
+      } else {
+        errorMessage = e.toString().replaceAll('Exception: ', '');
+      }
+      notifyListeners();
+      return false;
+    }
+  }
+
   /// Logout
   Future<void> logout() async {
     await _authApi.logout();
@@ -93,3 +139,4 @@ class AuthController extends ChangeNotifier {
     }
   }
 }
+

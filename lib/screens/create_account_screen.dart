@@ -3,8 +3,10 @@ import 'package:intl_phone_field/intl_phone_field.dart';
 import '../widgets/auth_header.dart';
 import '../widgets/custom_text_field.dart';
 import '../services/api/auth_api.dart';
+import '../controllers/auth_controller.dart';
 import 'login_screen.dart';
 import 'otp_screen.dart';
+import 'main_screen.dart';
 
 class CreateAccountScreen extends StatefulWidget {
   const CreateAccountScreen({super.key});
@@ -22,6 +24,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
   
   String _fullPhoneNumber = '';
   bool _isLoading = false;
+  bool _isAppleLoading = false;
   String? _errorMessage;
 
   static const Color brandRed = Color(0xFFE50914);
@@ -140,6 +143,45 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
       if (mounted) {
         setState(() {
           _isLoading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _handleAppleRegister() async {
+    setState(() {
+      _isAppleLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final authController = AuthController();
+      final success = await authController.signInWithApple();
+
+      if (!mounted) return;
+
+      if (success) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (context) => const MainScreen(),
+          ),
+        );
+      } else if (authController.errorMessage != null) {
+        setState(() {
+          _errorMessage = authController.errorMessage;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _errorMessage = e.toString().replaceAll('Exception: ', '');
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isAppleLoading = false;
         });
       }
     }
@@ -289,7 +331,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                       width: double.infinity,
                       height: 52,
                       child: ElevatedButton(
-                        onPressed: _isLoading ? null : _handleRegister,
+                        onPressed: (_isLoading || _isAppleLoading) ? null : _handleRegister,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.white,
                           foregroundColor: Colors.black,
@@ -318,6 +360,69 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                       ),
                     ),
                     const SizedBox(height: 20),
+                    // OR Divider
+                    Row(
+                      children: [
+                        Expanded(child: Divider(color: Colors.white.withOpacity(0.2))),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          child: Text(
+                            'OR',
+                            style: TextStyle(
+                              color: Colors.white.withOpacity(0.5),
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        Expanded(child: Divider(color: Colors.white.withOpacity(0.2))),
+                      ],
+                    ),
+                    const SizedBox(height: 20),
+                    // Sign in with Apple button (Premium Dark)
+                    SizedBox(
+                      width: double.infinity,
+                      height: 52,
+                      child: ElevatedButton(
+                        onPressed: (_isLoading || _isAppleLoading) ? null : _handleAppleRegister,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF1C1C1E),
+                          foregroundColor: Colors.white,
+                          disabledBackgroundColor: const Color(0xFF1C1C1E).withOpacity(0.5),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(30),
+                            side: BorderSide(color: Colors.white.withOpacity(0.2), width: 1),
+                          ),
+                          elevation: 0,
+                        ),
+                        child: _isAppleLoading
+                            ? const SizedBox(
+                                width: 24,
+                                height: 24,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                                ),
+                              )
+                            : Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: const [
+                                  Icon(Icons.apple, color: Colors.white, size: 24),
+                                  SizedBox(width: 10),
+                                  Text(
+                                    'Sign in with Apple',
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.white,
+                                      letterSpacing: 0.2,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
                     // Login link
                     Row(
                       mainAxisAlignment: MainAxisAlignment.center,
@@ -361,4 +466,5 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
       ),
     );
   }
+
 }

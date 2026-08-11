@@ -39,6 +39,49 @@ class AuthApi {
     }
   }
 
+  /// Sign in with Apple — POST /auth/apple-login
+  /// Contract for backend developer:
+  /// Request Payload: { identityToken, userIdentifier, authorizationCode, email, firstName, lastName }
+  Future<AuthResponse> loginWithApple({
+    required String identityToken,
+    required String userIdentifier,
+    String? authorizationCode,
+    String? email,
+    String? firstName,
+    String? lastName,
+  }) async {
+    try {
+      final response = await _dioClient.dio.post(
+        '/auth/apple-login',
+        data: {
+          'identityToken': identityToken,
+          'userIdentifier': userIdentifier,
+          if (authorizationCode != null) 'authorizationCode': authorizationCode,
+          if (email != null) 'email': email,
+          if (firstName != null) 'firstName': firstName,
+          if (lastName != null) 'lastName': lastName,
+        },
+      );
+      final authResponse = AuthResponse.fromJson(response.data);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('auth_token', authResponse.accessToken);
+      await prefs.setString('refresh_token', authResponse.refreshToken);
+      await prefs.setString('user_id', authResponse.user.id);
+      await prefs.setString('user_email', authResponse.user.email);
+      await prefs.setString('user_name', authResponse.user.username);
+      await prefs.setString('user_role', authResponse.user.role);
+      if (authResponse.user.phoneNumber != null) {
+        await prefs.setString('user_phone', authResponse.user.phoneNumber!);
+      }
+      if (firstName != null) await prefs.setString('user_first_name', firstName);
+      if (lastName != null) await prefs.setString('user_last_name', lastName);
+      return authResponse;
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+
   /// Register — POST /auth/register
   /// Request: { username, email, phoneNumber, password }
   /// Response: { success: true, message: string, email: string }

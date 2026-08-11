@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../widgets/auth_header.dart';
 import '../widgets/custom_text_field.dart';
 import '../services/api/auth_api.dart';
+import '../controllers/auth_controller.dart';
 import 'forgot_password_screen.dart';
 import 'create_account_screen.dart';
 import 'main_screen.dart';
@@ -19,6 +20,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final AuthApi _authApi = AuthApi();
   
   bool _isLoading = false;
+  bool _isAppleLoading = false;
   String? _errorMessage;
 
   static const Color brandRed = Color(0xFFE50914);
@@ -67,6 +69,45 @@ class _LoginScreenState extends State<LoginScreen> {
       if (mounted) {
         setState(() {
           _isLoading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _handleAppleLogin() async {
+    setState(() {
+      _isAppleLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final authController = AuthController();
+      final success = await authController.signInWithApple();
+
+      if (!mounted) return;
+
+      if (success) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (context) => const MainScreen(),
+          ),
+        );
+      } else if (authController.errorMessage != null) {
+        setState(() {
+          _errorMessage = authController.errorMessage;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _errorMessage = e.toString().replaceAll('Exception: ', '');
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isAppleLoading = false;
         });
       }
     }
@@ -184,13 +225,13 @@ class _LoginScreenState extends State<LoginScreen> {
                           ),
                         ),
                       ],
-                      const SizedBox(height: 40),
+                      const SizedBox(height: 32),
                       // Login button
                       SizedBox(
                         width: double.infinity,
                         height: 52,
                         child: ElevatedButton(
-                          onPressed: _isLoading ? null : _handleLogin,
+                          onPressed: (_isLoading || _isAppleLoading) ? null : _handleLogin,
                           style: ElevatedButton.styleFrom(
                             backgroundColor: const Color(0xFF343434),
                             foregroundColor: Colors.white,
@@ -219,6 +260,69 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                       ),
                       const SizedBox(height: 20),
+                      // Divider OR
+                      Row(
+                        children: [
+                          Expanded(child: Divider(color: Colors.white.withOpacity(0.2))),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16),
+                            child: Text(
+                              'OR',
+                              style: TextStyle(
+                                color: Colors.white.withOpacity(0.5),
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          Expanded(child: Divider(color: Colors.white.withOpacity(0.2))),
+                        ],
+                      ),
+                      const SizedBox(height: 20),
+                      // Sign in with Apple button (Premium Dark)
+                      SizedBox(
+                        width: double.infinity,
+                        height: 52,
+                        child: ElevatedButton(
+                          onPressed: (_isLoading || _isAppleLoading) ? null : _handleAppleLogin,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF1C1C1E),
+                            foregroundColor: Colors.white,
+                            disabledBackgroundColor: const Color(0xFF1C1C1E).withOpacity(0.5),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(30),
+                              side: BorderSide(color: Colors.white.withOpacity(0.2), width: 1),
+                            ),
+                            elevation: 0,
+                          ),
+                          child: _isAppleLoading
+                              ? const SizedBox(
+                                  width: 24,
+                                  height: 24,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                                  ),
+                                )
+                              : Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: const [
+                                    Icon(Icons.apple, color: Colors.white, size: 24),
+                                    SizedBox(width: 10),
+                                    Text(
+                                      'Sign in with Apple',
+                                      style: TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w600,
+                                        color: Colors.white,
+                                        letterSpacing: 0.2,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                        ),
+                      ),
+                      const SizedBox(height: 24),
                       // Create account link
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
@@ -263,4 +367,5 @@ class _LoginScreenState extends State<LoginScreen> {
       ),
     );
   }
+
 }
