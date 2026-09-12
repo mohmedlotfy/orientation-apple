@@ -9,6 +9,14 @@ import 'services/cache_service.dart';
 import 'services/clip_service.dart';
 import 'services/api/improved_clip_api.dart';
 import 'services/api/project_api.dart';
+import 'package:screen_protector/screen_protector.dart';
+import 'core/api_client.dart';
+import 'core/auth_interceptor.dart';
+import 'screens/login_screen.dart';
+import 'services/in_memory_cache_service.dart';
+import 'services/subscription_service.dart';
+
+import 'controllers/auth_controller.dart';
 
 final RouteObserver<ModalRoute<void>> routeObserver = RouteObserver<ModalRoute<void>>();
 
@@ -25,6 +33,7 @@ void main() async {
   };
 
   runZonedGuarded(() async {
+    WidgetsFlutterBinding.ensureInitialized();
     await _initializeApp();
     runApp(const OrientationApp());
   }, (error, stack) {
@@ -36,6 +45,14 @@ void main() async {
 }
 
 Future<void> _initializeApp() async {
+  ApiClient.init();
+  AuthInterceptor.onAuthFailure = () {
+    try {
+      if (Get.isRegistered<AuthController>()) {
+        Get.find<AuthController>().currentUser.value = null;
+      }
+    } catch (_) {}
+  };
   try {
     SystemChrome.setSystemUIOverlayStyle(
       const SystemUiOverlayStyle(
@@ -62,6 +79,7 @@ Future<void> _initializeApp() async {
   }
 
   try {
+    Get.put(AuthController(), permanent: true);
     Get.put(ImprovedClipApi(), permanent: true);
     Get.put(ProjectApi(), permanent: true);
     Get.put(
@@ -89,17 +107,41 @@ class _OrientationAppState extends State<OrientationApp>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _initScreenProtector();
+  }
+
+  Future<void> _initScreenProtector() async {
+    try {
+      await ScreenProtector.preventScreenshotOn();
+      await ScreenProtector.protectDataLeakageOn();
+      await ScreenProtector.protectDataLeakageWithColor(Colors.black);
+      if (kDebugMode) debugPrint('Screen protector initialized successfully');
+    } catch (e) {
+      if (kDebugMode) debugPrint('Error initializing screen protector: $e');
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    try {
+      ScreenProtector.preventScreenshotOff();
+      ScreenProtector.protectDataLeakageOff();
+      ScreenProtector.protectDataLeakageWithColorOff();
+    } catch (_) {}
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused ||
+    if (state == AppLifecycleState.resumed) {
+      // User returned to app (e.g. from external web checkout)
+      try {
+        SubscriptionService().getCurrentSubscription();
+        InMemoryCacheService().clearAllCache();
+        if (kDebugMode) debugPrint('🔄 [Lifecycle Resumed] Cleared cache and refreshed subscription status.');
+      } catch (_) {}
+    } else if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {
       try {
         if (Get.isRegistered<ClipService>()) {

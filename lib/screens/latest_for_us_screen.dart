@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../widgets/project_card.dart';
 import '../services/api/project_api.dart';
 import '../services/api/home_api.dart';
@@ -33,11 +34,15 @@ class _LatestForUsScreenState extends State<LatestForUsScreen> {
   Future<void> _loadProjects() async {
     try {
       final projects = await _homeApi.getLatestProjects();
-      // Load saved status for each project
+      
+      // Load saved status for all projects with a single SharedPreferences read
+      final prefs = await SharedPreferences.getInstance();
+      final savedIds = (prefs.getStringList('saved_projects') ?? []).toSet();
       final savedStatus = <String, bool>{};
       for (final project in projects) {
-        savedStatus[project.id] = await _projectApi.isProjectSaved(project.id);
+        savedStatus[project.id] = savedIds.contains(project.id);
       }
+
       if (mounted) {
         setState(() {
           _projects = projects;
@@ -110,14 +115,15 @@ class _LatestForUsScreenState extends State<LatestForUsScreen> {
   }
 
   Future<void> _handleBookmark(ProjectModel project) async {
+    final isSaved = _savedProjects[project.id] ?? false;
+    setState(() {
+      _savedProjects[project.id] = !isSaved;
+    });
+
     try {
-      final isSaved = await _projectApi.isProjectSaved(project.id);
       if (isSaved) {
         await _projectApi.unsaveProject(project.id);
         if (mounted) {
-          setState(() {
-            _savedProjects[project.id] = false;
-          });
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text('Removed from saved'),
@@ -128,9 +134,6 @@ class _LatestForUsScreenState extends State<LatestForUsScreen> {
       } else {
         await _projectApi.saveProject(project.id);
         if (mounted) {
-          setState(() {
-            _savedProjects[project.id] = true;
-          });
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text('Saved!'),
@@ -141,6 +144,9 @@ class _LatestForUsScreenState extends State<LatestForUsScreen> {
       }
     } catch (e) {
       if (mounted) {
+        setState(() {
+          _savedProjects[project.id] = isSaved;
+        });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Error: ${e.toString()}'),
@@ -287,9 +293,9 @@ ${project.script ?? 'Check out this amazing project!'}
             ),
           ),
           const SizedBox(width: 8),
-          const Text(
-            '(24 Orientation)',
-            style: TextStyle(
+          Text(
+            '(${_projects.length} Orientation)',
+            style: const TextStyle(
               color: brandRed,
               fontSize: 14,
               fontWeight: FontWeight.w500,

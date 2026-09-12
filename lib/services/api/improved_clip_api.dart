@@ -125,6 +125,12 @@ class ImprovedClipApi {
   }) async {
     final cacheKey = 'all_clips_page_${page}_limit_$limit';
 
+    // Clear cache entry if forceRefresh is requested
+    if (forceRefresh) {
+      _pageCache.remove(cacheKey);
+      _pageCacheTimestamps.remove(cacheKey);
+    }
+
     // Check page cache first
     if (!forceRefresh &&
         _isPageCacheValid(cacheKey) &&
@@ -136,6 +142,8 @@ class ImprovedClipApi {
     }
 
     try {
+      debugPrint(
+          '🌐 ImprovedClipApi: GET /reels (page: $page, limit: $limit, forceRefresh: $forceRefresh)...');
       // Try to fetch with pagination parameters
       final response = await _dioClient.dio.get(
         '/reels',
@@ -145,33 +153,59 @@ class ImprovedClipApi {
         },
       );
 
+      debugPrint('📡 ImprovedClipApi: GET /reels status: ${response.statusCode}');
+      debugPrint('📡 ImprovedClipApi: Response data type: ${response.data.runtimeType}');
+
       // Handle response format
       List<dynamic> list;
       if (response.data is List) {
         list = response.data as List;
-      } else if (response.data is Map<String, dynamic>) {
-        final map = response.data as Map<String, dynamic>;
+      } else if (response.data is Map) {
+        final map = response.data as Map;
         list = (map['reels'] as List<dynamic>?) ??
+            (map['value'] as List<dynamic>?) ??
             (map['data'] as List<dynamic>?) ??
             (map['clips'] as List<dynamic>?) ??
+            (map['items'] as List<dynamic>?) ??
             <dynamic>[];
       } else {
         list = <dynamic>[];
       }
 
+      debugPrint('📊 ImprovedClipApi: Received ${list.length} raw reel items from backend');
+      if (list.isNotEmpty) {
+        debugPrint('🔍 ImprovedClipApi: First reel item preview: ${list.first}');
+      }
+
+      // Parse clips safely one-by-one to avoid an error in one item discarding all others
+      final allClips = <ClipModel>[];
+      for (var i = 0; i < list.length; i++) {
+        final raw = list[i];
+        if (raw == null) continue;
+        try {
+          if (raw is Map) {
+            allClips.add(ClipModel.fromJson(Map<String, dynamic>.from(raw)));
+          } else {
+            debugPrint('⚠️ ImprovedClipApi: Item at index $i is not a Map: $raw');
+          }
+        } catch (itemError, stack) {
+          debugPrint('❌ ImprovedClipApi: Error parsing reel at index $i: $itemError');
+          debugPrint('   Raw item: $raw');
+          debugPrint('   Stack trace: $stack');
+        }
+      }
+
+      debugPrint(
+          '✅ ImprovedClipApi: Successfully parsed ${allClips.length}/${list.length} clips');
+
       // If backend doesn't support pagination, handle it in memory
       List<ClipModel> clips;
       if (list.length > limit && page > 1) {
         // Backend returned all clips, need to paginate in memory
-        final allClips = list
-            .map((e) => ClipModel.fromJson(e as Map<String, dynamic>))
-            .toList();
         final skip = (page - 1) * limit;
         clips = allClips.skip(skip).take(limit).toList();
       } else {
-        clips = list
-            .map((e) => ClipModel.fromJson(e as Map<String, dynamic>))
-            .toList();
+        clips = allClips;
       }
 
       // Update individual clip cache
@@ -188,10 +222,14 @@ class ImprovedClipApi {
       await _syncLikedStatus(clips);
 
       debugPrint(
-          '✅ ImprovedClipApi: Loaded ${clips.length} clips (page $page, limit $limit)');
+          '✅ ImprovedClipApi: Returning ${clips.length} clips for page $page (limit $limit)');
       return clips;
     } on DioException catch (e) {
-      debugPrint('❌ ImprovedClipApi: Error fetching clips: ${e.message}');
+      debugPrint('❌ ImprovedClipApi: DioException fetching clips: ${e.message}');
+      if (e.response != null) {
+        debugPrint('   Status: ${e.response?.statusCode}');
+        debugPrint('   Data: ${e.response?.data}');
+      }
 
       // Fallback to cache if available
       if (_pageCache.containsKey(cacheKey)) {
@@ -211,8 +249,8 @@ class ImprovedClipApi {
       }
 
       return [];
-    } catch (e) {
-      debugPrint('❌ ImprovedClipApi: Unexpected error: $e');
+    } catch (e, stack) {
+      debugPrint('❌ ImprovedClipApi: Unexpected error: $e\n$stack');
       return [];
     }
   }
@@ -234,48 +272,7 @@ class ImprovedClipApi {
     }
 
     try {
-      // Try server-side filtering first (if backend supports projectId param)
-      try {
-        final response = await _dioClient.dio.get(
-          '/reels',
-          queryParameters: {
-            'projectId': projectId,
-            'page': page,
-            'limit': limit,
-          },
-        );
-        List<dynamic> list;
-        if (response.data is List) {
-          list = response.data as List;
-        } else if (response.data is Map<String, dynamic>) {
-          final map = response.data as Map<String, dynamic>;
-          list = (map['reels'] as List<dynamic>?) ??
-              (map['data'] as List<dynamic>?) ??
-              (map['clips'] as List<dynamic>?) ??
-              <dynamic>[];
-        } else {
-          list = <dynamic>[];
-        }
-        if (list.isNotEmpty) {
-          final clips = list
-              .map((e) => ClipModel.fromJson(e as Map<String, dynamic>))
-              .toList();
-          for (var clip in clips) {
-            _clipCache.put(clip.id, clip);
-            _updateCacheTimestamp(clip.id);
-          }
-          _pageCache.put(cacheKey, clips);
-          _updatePageCacheTimestamp(cacheKey);
-          await _syncLikedStatus(clips);
-          debugPrint(
-              '✅ ImprovedClipApi: Fetched ${clips.length} clips for project $projectId (server-side)');
-          return clips;
-        }
-      } on DioException catch (_) {
-        // Backend may not support projectId - fall through to local filter
-      }
-
-      // Fallback: fetch and filter locally (when backend has no projectId support)
+      // Fetch full catalog (cached for 5 min in getAllClips) and filter locally
       final allClips =
           await getAllClips(page: 1, limit: 1000, forceRefresh: forceRefresh);
       final filtered =
@@ -539,7 +536,9 @@ class ImprovedClipApi {
       );
 
       if (response.statusCode == 200 || response.statusCode == 201) {
-        final clip = ClipModel.fromJson(response.data as Map<String, dynamic>);
+        final data = response.data as Map<String, dynamic>;
+        final reelData = data['reel'] as Map<String, dynamic>? ?? data;
+        final clip = ClipModel.fromJson(reelData);
 
         // Update cache
         _clipCache.put(clip.id, clip);

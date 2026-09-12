@@ -15,34 +15,35 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace = "com.archnest.orientation"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     signingConfigs {
-        if (keystorePropertiesFile.exists()) {
-            create("release") {
+        create("release") {
+            if (keystorePropertiesFile.exists()) {
                 keyAlias = keystoreProperties["keyAlias"] as String? ?: ""
                 keyPassword = keystoreProperties["keyPassword"] as String? ?: ""
-                storeFile = file(keystoreProperties["storeFile"] as String? ?: "")
+                val storeFilePath = keystoreProperties["storeFile"] as String? ?: ""
+                storeFile = if (storeFilePath.isNotEmpty()) file(storeFilePath) else null
                 storePassword = keystoreProperties["storePassword"] as String? ?: ""
             }
         }
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
         isCoreLibraryDesugaringEnabled = true
     }
 
     kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_11.toString()
+        jvmTarget = JavaVersion.VERSION_17.toString()
     }
 
     defaultConfig {
         applicationId = "com.archnest.orientation"
         minSdk = flutter.minSdkVersion
-        targetSdk = flutter.targetSdkVersion
+        targetSdk = 36
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }

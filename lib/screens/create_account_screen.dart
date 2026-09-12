@@ -3,6 +3,7 @@ import 'package:intl_phone_field/intl_phone_field.dart';
 import '../widgets/auth_header.dart';
 import '../widgets/custom_text_field.dart';
 import '../services/api/auth_api.dart';
+import '../utils/validators.dart';
 import '../controllers/auth_controller.dart';
 import 'login_screen.dart';
 import 'otp_screen.dart';
@@ -26,6 +27,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
   bool _isLoading = false;
   bool _isAppleLoading = false;
   String? _errorMessage;
+  String? _passwordError;
 
   static const Color brandRed = Color(0xFFE50914);
 
@@ -38,24 +40,9 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     super.dispose();
   }
 
-  // Email validation regex
-  bool _isValidEmail(String email) {
-    final emailRegex = RegExp(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$');
-    return emailRegex.hasMatch(email);
-  }
-
-  // Phone validation regex (supports international format with country code)
-  bool _isValidPhone(String phone) {
-    // Remove spaces, dashes, and parentheses
-    final cleanedPhone = phone.replaceAll(RegExp(r'[\s\-\(\)]'), '');
-    // Check if it starts with + and has 10-15 digits after country code
-    final phoneRegex = RegExp(r'^\+[1-9]\d{9,14}$');
-    return phoneRegex.hasMatch(cleanedPhone);
-  }
-
   Future<void> _handleRegister() async {
     // Validate inputs
-    if (_usernameController.text.trim().isEmpty) {
+    if (!Validators.isNonEmptyText(_usernameController.text)) {
       setState(() {
         _errorMessage = 'Please enter your username';
       });
@@ -70,7 +57,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     }
 
     // Validate phone number format
-    if (!_isValidPhone(_fullPhoneNumber)) {
+    if (!Validators.isPhone(_fullPhoneNumber)) {
       setState(() {
         _errorMessage = 'Please enter a valid phone number with country code';
       });
@@ -86,7 +73,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     }
 
     // Validate email format
-    if (!_isValidEmail(email)) {
+    if (!Validators.isEmail(email)) {
       setState(() {
         _errorMessage = 'Please enter a valid email address';
       });
@@ -96,13 +83,15 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     if (_passwordController.text.isEmpty) {
       setState(() {
         _errorMessage = 'Please enter your password';
+        _passwordError = 'Password is required';
       });
       return;
     }
 
-    if (_passwordController.text.length < 8) {
+    if (!Validators.isPassword(_passwordController.text)) {
       setState(() {
         _errorMessage = 'Password must be at least 8 characters';
+        _passwordError = 'Password must be at least 8 characters';
       });
       return;
     }
@@ -110,20 +99,19 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     setState(() {
       _isLoading = true;
       _errorMessage = null;
+      _passwordError = null;
     });
 
     try {
       final result = await _authApi.register(
         username: _usernameController.text.trim(),
         email: email,
-        phoneNumber: _fullPhoneNumber, // Use full phone number with country code
+        phoneNumber: _fullPhoneNumber,
         password: _passwordController.text,
       );
 
       if (!mounted) return;
 
-      // Register returns { success, message, email }
-      // Navigate to OTP screen for email verification
       final userEmail = result['email'] as String? ?? email;
       
       Navigator.pushReplacement(
@@ -131,13 +119,17 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
         MaterialPageRoute(
           builder: (context) => OtpScreen(
             email: userEmail,
-            isRegistration: true, // Indicate this is for registration
+            isRegistration: true,
           ),
         ),
       );
     } catch (e) {
+      final errStr = e.toString().replaceAll('Exception: ', '');
       setState(() {
-        _errorMessage = e.toString().replaceAll('Exception: ', '');
+        _errorMessage = errStr;
+        if (errStr.toLowerCase().contains('password')) {
+          _passwordError = errStr;
+        }
       });
     } finally {
       if (mounted) {
@@ -167,9 +159,9 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
             builder: (context) => const MainScreen(),
           ),
         );
-      } else if (authController.errorMessage != null) {
+      } else if (authController.errorMessage.value.isNotEmpty) {
         setState(() {
-          _errorMessage = authController.errorMessage;
+          _errorMessage = authController.errorMessage.value;
         });
       }
     } catch (e) {
@@ -190,7 +182,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
   @override
   Widget build(BuildContext context) {
     final keyboardHeight = MediaQuery.of(context).viewInsets.bottom;
-    final isKeyboardVisible = keyboardHeight > 0;
     
     return Scaffold(
       backgroundColor: Colors.black,
@@ -205,7 +196,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Header with geometric background and logo
+              // Header with background image and logo
               const AuthHeader(),
               // Content
               Padding(
@@ -226,7 +217,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                     const SizedBox(height: 12),
                     // Description
                     Text(
-                      'Create your account to start viewing Orientation projects and access all details easily.',
+                      'Enter your details to create an account and follow Orientation projects.',
                       style: TextStyle(
                         color: Colors.white.withOpacity(0.7),
                         fontSize: 14,
@@ -241,7 +232,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                       controller: _usernameController,
                     ),
                     const SizedBox(height: 16),
-                    // Phone number field with country code picker
+                    // Phone number field with country picker
                     Container(
                       decoration: BoxDecoration(
                         border: Border.all(
@@ -300,6 +291,14 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                       prefixIcon: Icons.lock_outline,
                       isPassword: true,
                       controller: _passwordController,
+                      errorText: _passwordError,
+                      onChanged: (value) {
+                        if (_passwordError != null) {
+                          setState(() {
+                            _passwordError = null;
+                          });
+                        }
+                      },
                     ),
                     // Error message
                     if (_errorMessage != null) ...[
@@ -379,7 +378,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                       ],
                     ),
                     const SizedBox(height: 20),
-                    // Sign in with Apple button (Premium Dark)
+                    // Sign in with Apple button (Strict Apple Guideline 4.8 Compliance)
                     SizedBox(
                       width: double.infinity,
                       height: 52,
@@ -466,5 +465,4 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
       ),
     );
   }
-
 }

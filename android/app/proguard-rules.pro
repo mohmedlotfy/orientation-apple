@@ -92,3 +92,19 @@
 -keep class androidx.fragment.app.** { *; }
 -keep class androidx.activity.** { *; }
 
+# Flutter Local Notifications
+-keep class com.dexterous.flutterlocalnotifications.** { *; }
+-dontwarn com.dexterous.flutterlocalnotifications.**
+
+# Google Sign In
+-keep class com.google.android.gms.auth.api.signin.** { *; }
+-dontwarn com.google.android.gms.auth.api.signin.**
+
+# Flutter Secure Storage
+-keep class com.it_nomads.fluttersecurestorage.** { *; }
+-dontwarn com.it_nomads.fluttersecurestorage.**
+
+# Screen Protector
+-keep class com.screenprotector.** { *; }
+-dontwarn com.screenprotector.**
+

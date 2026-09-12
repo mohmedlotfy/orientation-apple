@@ -127,7 +127,11 @@ class ProjectModel {
       script: json['script']?.toString() ?? '',
       whatsappNumber: json['whatsappNumber']?.toString() ?? '',
       locationUrl: json['locationUrl']?.toString() ?? json['mapsLocation']?.toString() ?? '',
-      inventoryUrl: '', // from /files/get/inventory, not project payload
+      inventoryUrl: json['inventory'] != null 
+          ? (json['inventory'] is Map 
+              ? (json['inventory']['inventoryUrl']?.toString() ?? json['inventory']['fileUrl']?.toString() ?? '') 
+              : json['inventory'].toString()) 
+          : '',
       advertisementVideoUrl: heroVideoUrl,
       projectThumbnailUrl: json['projectThumbnailUrl']?.toString() ?? json['image']?.toString() ?? '',
       logo: json['logo']?.toString() ?? json['logoUrl']?.toString(),

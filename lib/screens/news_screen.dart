@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../services/api/news_api.dart';
 import '../services/notification_service.dart';
 import '../models/news_model.dart';
@@ -41,12 +42,19 @@ class _NewsScreenState extends State<NewsScreen> {
     try {
       final news = await _newsApi.getAllNews();
       
+      // Batch fetch reminded status for all news items in one pass
+      final prefs = await SharedPreferences.getInstance();
+      final remindedIds = (prefs.getStringList('reminded_news') ?? []).toSet();
+      final newsWithReminded = news
+          .map((item) => item.copyWith(isReminded: remindedIds.contains(item.id)))
+          .toList();
+      
       // Check for new news and send notifications
-      await _notificationService.checkAndNotifyNewNews(news);
+      await _notificationService.checkAndNotifyNewNews(newsWithReminded);
       
       if (mounted) {
         setState(() {
-          _news = news;
+          _news = newsWithReminded;
           _isLoading = false;
         });
       }
@@ -180,12 +188,16 @@ class _NewsScreenState extends State<NewsScreen> {
               if (!isAuth) return;
               
               final news = _news[index];
-              if (news.isReminded) {
-                await _newsApi.unremindNews(news.id);
-              } else {
+              final newIsReminded = !news.isReminded;
+              setState(() {
+                _news[index] = news.copyWith(isReminded: newIsReminded);
+              });
+              
+              if (newIsReminded) {
                 await _newsApi.remindNews(news.id);
+              } else {
+                await _newsApi.unremindNews(news.id);
               }
-              _loadNews();
             },
           ),
         );
@@ -211,35 +223,26 @@ class NewsCard extends StatefulWidget {
 }
 
 class _NewsCardState extends State<NewsCard> {
-  bool _isReminded = false;
-  final NewsApi _newsApi = NewsApi();
+  late bool _isReminded;
 
   @override
   void initState() {
     super.initState();
-    _checkReminded();
+    _isReminded = widget.news.isReminded;
   }
 
-  Future<void> _checkReminded() async {
-    final isReminded = await _newsApi.isNewsReminded(widget.news.id);
-    if (mounted) {
-      setState(() {
-        _isReminded = isReminded;
-      });
+  @override
+  void didUpdateWidget(NewsCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.news.isReminded != widget.news.isReminded) {
+      _isReminded = widget.news.isReminded;
     }
   }
 
   Future<void> _toggleRemind() async {
-    if (_isReminded) {
-      await _newsApi.unremindNews(widget.news.id);
-    } else {
-      await _newsApi.remindNews(widget.news.id);
-    }
-    if (mounted) {
-      setState(() {
-        _isReminded = !_isReminded;
-      });
-    }
+    setState(() {
+      _isReminded = !_isReminded;
+    });
     widget.onRemindToggle();
   }
 

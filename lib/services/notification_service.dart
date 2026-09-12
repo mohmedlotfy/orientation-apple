@@ -73,9 +73,6 @@ class NotificationService {
 
       _isInitialized = true;
       print('✅ Notification service initialized');
-      
-      // Start periodic check for new news
-      startPeriodicNewsCheck();
     } catch (e) {
       print('❌ Error initializing notifications: $e');
       // Don't throw - allow app to continue even if notifications fail
@@ -195,6 +192,8 @@ class NotificationService {
     print('⏹️ Stopped periodic news check');
   }
 
+  DateTime? _lastNewsCheckTime;
+
   /// Check for new news from API
   Future<void> _checkForNewNews() async {
     // Prevent concurrent execution - if a check is already in progress, skip this one
@@ -203,8 +202,15 @@ class NotificationService {
       return;
     }
 
-    // Set flag to prevent concurrent execution
+    if (_lastNewsCheckTime != null &&
+        DateTime.now().difference(_lastNewsCheckTime!).inSeconds < 10) {
+      print('⏭️ News checked within last 10s, skipping duplicate check');
+      return;
+    }
+
+    // Set flag and timestamp to prevent concurrent execution & redundant calls
     _isChecking = true;
+    _lastNewsCheckTime = DateTime.now();
     
     try {
       if (!_isInitialized) {

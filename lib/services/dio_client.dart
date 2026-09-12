@@ -1,29 +1,39 @@
 import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../config/api_config.dart';
+import '../core/api_client.dart';
 
 class DioClient {
   static final DioClient _instance = DioClient._internal();
   factory DioClient() => _instance;
-  DioClient._internal();
+  DioClient._internal() {
+    _baseUrl = _sanitizeUrl(ApiConfig.baseUrl);
+  }
   
   // Cached SharedPreferences instance for faster token access
   static SharedPreferences? _cachedPrefs;
 
-  // The Base URL will be taken from the environment variables during build/run.
-  // If not provided, it defaults to the new production URL.
-  static const String defaultBaseUrl = String.fromEnvironment(
-    'BASE_URL',
-    defaultValue: 'https://api.orientationapps.com',
-  );
-  
-  // Default to the dynamically fetched URL
-  String _baseUrl = defaultBaseUrl;
+  // Active base URL — resolved from ApiConfig (supports --dart-define override).
+  // Call setBaseUrl() only if you need a runtime override (e.g. a debug menu).
+  late String _baseUrl;
   late Dio dio;
   bool _isRefreshing = false;
 
+  static String _sanitizeUrl(String url) {
+    var sanitized = url.trim();
+    if (sanitized.isEmpty) return sanitized;
+    if (sanitized.endsWith('/')) {
+      sanitized = sanitized.substring(0, sanitized.length - 1);
+    }
+    if (!sanitized.endsWith('/api/v1')) {
+      sanitized = '$sanitized/api/v1';
+    }
+    return sanitized;
+  }
+
   /// Set the base URL dynamically
   void setBaseUrl(String url) {
-    _baseUrl = url;
+    _baseUrl = _sanitizeUrl(url);
     init(); // Reinitialize with new URL
   }
 
@@ -59,16 +69,29 @@ class DioClient {
         if (newRefreshToken.isNotEmpty) {
           await prefs.setString('refresh_token', newRefreshToken);
         }
+        // Sync tokens to ApiClient
+        try {
+          await ApiClient.saveTokens(
+            accessToken: newAccessToken,
+            refreshToken: newRefreshToken.isNotEmpty ? newRefreshToken : refreshToken,
+          );
+        } catch (_) {}
         return true;
       }
       
       return false;
-    } catch (e) {
+    } on DioException catch (e) {
       print('❌ Failed to refresh token: $e');
-      // Clear tokens on refresh failure
-      final prefs = await _getPrefs();
-      await prefs.remove('auth_token');
-      await prefs.remove('refresh_token');
+      final statusCode = e.response?.statusCode;
+      if (statusCode == 401 || statusCode == 403) {
+        // Clear tokens ONLY if server explicitly rejected the refresh token
+        final prefs = await _getPrefs();
+        await prefs.remove('auth_token');
+        await prefs.remove('refresh_token');
+      }
+      return false;
+    } catch (e) {
+      print('❌ Unexpected error refreshing token: $e');
       return false;
     } finally {
       _isRefreshing = false;
@@ -79,14 +102,10 @@ class DioClient {
     dio = Dio(
       BaseOptions(
         baseUrl: _baseUrl,
-        connectTimeout: const Duration(seconds: 15),
-        receiveTimeout: const Duration(seconds: 20),
-        sendTimeout: const Duration(seconds: 15),
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'Connection': 'keep-alive',
-        },
+        connectTimeout: ApiConfig.connectTimeout,
+        receiveTimeout: ApiConfig.receiveTimeout,
+        sendTimeout: ApiConfig.sendTimeout,
+        headers: Map<String, dynamic>.from(ApiConfig.defaultHeaders),
       ),
     );
 

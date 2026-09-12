@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'dart:math' as math;
 
 /// Shimmer effect widget for skeleton loading
 class Shimmer extends StatefulWidget {

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/api/developer_api.dart';
+import '../utils/validators.dart';
 
 class JoinUsScreen extends StatefulWidget {
   const JoinUsScreen({super.key});
@@ -207,14 +208,34 @@ class _JoinUsScreenState extends State<JoinUsScreen> {
 
   Future<void> _handleSubmit() async {
     // Validate required fields
-    if (_nameController.text.trim().isEmpty ||
-        _addressController.text.trim().isEmpty ||
-        _phoneController.text.trim().isEmpty ||
-        _projectsCountController.text.trim().isEmpty ||
-        _socialLinkController.text.trim().isEmpty) {
+    if (!Validators.isNonEmptyText(_nameController.text) ||
+        !Validators.isNonEmptyText(_addressController.text) ||
+        !Validators.isNonEmptyText(_phoneController.text) ||
+        !Validators.isNonEmptyText(_projectsCountController.text) ||
+        !Validators.isNonEmptyText(_socialLinkController.text)) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Please fill all required fields'),
+          backgroundColor: brandRed,
+        ),
+      );
+      return;
+    }
+
+    if (!Validators.isPhone(_phoneController.text.trim())) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enter a valid phone number'),
+          backgroundColor: brandRed,
+        ),
+      );
+      return;
+    }
+
+    if (!Validators.isUrl(_socialLinkController.text.trim())) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enter a valid social media URL'),
           backgroundColor: brandRed,
         ),
       );

@@ -1,6 +1,9 @@
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../dio_client.dart';
+import '../subscription_service.dart';
+import '../../core/api_client.dart';
 import '../../models/user_model.dart';
 
 class AuthApi {
@@ -22,26 +25,97 @@ class AuthApi {
         '/auth/login',
         data: {'email': email, 'password': password},
       );
-      final authResponse = AuthResponse.fromJson(response.data);
+      
+      final data = response.data as Map<String, dynamic>;
+      final accessToken = data['accessToken']?.toString() ?? data['token']?.toString() ?? '';
+      final refreshToken = data['refreshToken']?.toString() ?? '';
+      final userId = data['id']?.toString() ?? '';
+
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('auth_token', authResponse.accessToken);
-      await prefs.setString('refresh_token', authResponse.refreshToken);
-      await prefs.setString('user_id', authResponse.user.id);
-      await prefs.setString('user_email', authResponse.user.email);
-      await prefs.setString('user_name', authResponse.user.username);
-      await prefs.setString('user_role', authResponse.user.role);
-      if (authResponse.user.phoneNumber != null) {
-        await prefs.setString('user_phone', authResponse.user.phoneNumber!);
+      await prefs.setString('auth_token', accessToken);
+      await prefs.setString('refresh_token', refreshToken);
+
+      // Fetch profile to get full user model details
+      UserModel user;
+      try {
+        final profileResponse = await _dioClient.dio.get('/users/profile');
+        final responseData = profileResponse.data;
+        Map<String, dynamic> profileMap = {};
+        if (responseData is Map<String, dynamic>) {
+          if (responseData.containsKey('user') && responseData['user'] is Map) {
+            profileMap = Map<String, dynamic>.from(responseData['user'] as Map);
+          } else if (responseData.containsKey('value') && responseData['value'] is Map) {
+            profileMap = Map<String, dynamic>.from(responseData['value'] as Map);
+          } else if (responseData.containsKey('data') && responseData['data'] is Map) {
+            profileMap = Map<String, dynamic>.from(responseData['data'] as Map);
+          } else {
+            profileMap = responseData;
+          }
+        }
+        user = UserModel.fromJson(profileMap);
+        // Store firstName/lastName/profilePicture from the profile response
+        final pFirstName = profileMap['firstName']?.toString() ?? '';
+        final pLastName = profileMap['lastName']?.toString() ?? '';
+        final pProfilePicture = profileMap['profilePicture']?.toString()
+            ?? profileMap['avatar']?.toString()
+            ?? profileMap['photo']?.toString()
+            ?? '';
+        if (pFirstName.isNotEmpty) await prefs.setString('user_first_name', pFirstName);
+        if (pLastName.isNotEmpty) await prefs.setString('user_last_name', pLastName);
+        if (pProfilePicture.isNotEmpty) await prefs.setString('user_profile_picture', pProfilePicture);
+      } catch (e) {
+        // Fallback: construct skeleton UserModel
+        user = UserModel(
+          id: userId,
+          username: email.split('@').first,
+          email: email,
+          role: 'user',
+        );
       }
+
+      final authResponse = AuthResponse(
+        user: user,
+        accessToken: accessToken,
+        refreshToken: refreshToken,
+      );
+
+      await prefs.setString('user_id', user.id);
+      await prefs.setString('user_email', user.email);
+      await prefs.setString('user_name', user.username);
+      await prefs.setString('user_role', user.role);
+      if (user.phoneNumber != null) {
+        await prefs.setString('user_phone', user.phoneNumber!);
+      }
+
+      // Sync tokens to ApiClient for global subscription and project calls
+      try {
+        await ApiClient.saveTokens(accessToken: accessToken, refreshToken: refreshToken);
+      } catch (e) {
+        debugPrint('⚠️ [AuthApi] Error saving tokens to ApiClient: $e');
+      }
+
+      // If user profile returned active subscription, cache it immediately
+      if (user.isSubscribed) {
+        await SubscriptionService.cacheSubscriptionStatus(
+          UserSubscriptionStatus(
+            hasAccess: true,
+            status: user.subscriptionStatus,
+            planName: user.planName,
+          ),
+        );
+      }
+
+      // Trigger subscription check in the background to guarantee freshest status
+      SubscriptionService.checkMySubscription(forceRefresh: true)
+          .catchError((_) => UserSubscriptionStatus(hasAccess: false));
+
       return authResponse;
     } on DioException catch (e) {
       throw _handleError(e);
     }
   }
 
-  /// Sign in with Apple — POST /auth/apple-login
-  /// Contract for backend developer:
-  /// Request Payload: { identityToken, userIdentifier, authorizationCode, email, firstName, lastName }
+  /// Sign in with Apple — POST /auth/apple/mobile
   Future<AuthResponse> loginWithApple({
     required String identityToken,
     required String userIdentifier,
@@ -51,36 +125,110 @@ class AuthApi {
     String? lastName,
   }) async {
     try {
-      final response = await _dioClient.dio.post(
-        '/auth/apple-login',
-        data: {
-          'identityToken': identityToken,
-          'userIdentifier': userIdentifier,
-          if (authorizationCode != null) 'authorizationCode': authorizationCode,
-          if (email != null) 'email': email,
-          if (firstName != null) 'firstName': firstName,
-          if (lastName != null) 'lastName': lastName,
-        },
-      );
-      final authResponse = AuthResponse.fromJson(response.data);
+      final payload = <String, dynamic>{
+        'identityToken': identityToken,
+        'userIdentifier': userIdentifier,
+        if (authorizationCode != null) 'authorizationCode': authorizationCode,
+        if (email != null) 'email': email,
+        if (firstName != null) 'firstName': firstName,
+        if (lastName != null) 'lastName': lastName,
+        if (firstName != null || lastName != null)
+          'name': {
+            if (firstName != null) 'firstName': firstName,
+            if (lastName != null) 'lastName': lastName,
+          },
+      };
+
+      Response response;
+      try {
+        response = await _dioClient.dio.post(
+          '/auth/apple/mobile',
+          data: payload,
+        );
+      } catch (_) {
+        response = await _dioClient.dio.post(
+          '/auth/apple-login',
+          data: payload,
+        );
+      }
+
+      final data = response.data as Map<String, dynamic>;
+      final accessToken = data['accessToken']?.toString() ?? data['token']?.toString() ?? '';
+      final refreshToken = data['refreshToken']?.toString() ?? '';
+      final userId = data['id']?.toString() ?? '';
+
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('auth_token', authResponse.accessToken);
-      await prefs.setString('refresh_token', authResponse.refreshToken);
-      await prefs.setString('user_id', authResponse.user.id);
-      await prefs.setString('user_email', authResponse.user.email);
-      await prefs.setString('user_name', authResponse.user.username);
-      await prefs.setString('user_role', authResponse.user.role);
-      if (authResponse.user.phoneNumber != null) {
-        await prefs.setString('user_phone', authResponse.user.phoneNumber!);
+      await prefs.setString('auth_token', accessToken);
+      await prefs.setString('refresh_token', refreshToken);
+
+      // Fetch profile to get full user model details
+      UserModel user;
+      try {
+        final profileResponse = await _dioClient.dio.get('/users/profile');
+        final responseData = profileResponse.data;
+        Map<String, dynamic> profileMap = {};
+        if (responseData is Map<String, dynamic>) {
+          if (responseData.containsKey('value') && responseData['value'] is Map) {
+            profileMap = Map<String, dynamic>.from(responseData['value'] as Map);
+          } else if (responseData.containsKey('data') && responseData['data'] is Map) {
+            profileMap = Map<String, dynamic>.from(responseData['data'] as Map);
+          } else {
+            profileMap = responseData;
+          }
+        }
+        user = UserModel.fromJson(profileMap);
+      } catch (e) {
+        user = UserModel(
+          id: userId,
+          username: firstName ?? (email?.split('@').first ?? 'User'),
+          email: email ?? '',
+          role: 'user',
+        );
+      }
+
+      final authResponse = AuthResponse(
+        user: user,
+        accessToken: accessToken,
+        refreshToken: refreshToken,
+      );
+
+      await prefs.setString('user_id', user.id);
+      await prefs.setString('user_email', user.email);
+      await prefs.setString('user_name', user.username);
+      await prefs.setString('user_role', user.role);
+      if (user.phoneNumber != null) {
+        await prefs.setString('user_phone', user.phoneNumber!);
       }
       if (firstName != null) await prefs.setString('user_first_name', firstName);
       if (lastName != null) await prefs.setString('user_last_name', lastName);
+
+      // Sync tokens to ApiClient for global subscription and project calls
+      try {
+        await ApiClient.saveTokens(accessToken: accessToken, refreshToken: refreshToken);
+      } catch (e) {
+        debugPrint('⚠️ [AuthApi] Error saving tokens to ApiClient: $e');
+      }
+
+      // If user profile returned active subscription, cache it immediately
+      if (user.isSubscribed) {
+        await SubscriptionService.cacheSubscriptionStatus(
+          UserSubscriptionStatus(
+            hasAccess: true,
+            status: user.subscriptionStatus,
+            planName: user.planName,
+          ),
+        );
+      }
+
+      // Trigger subscription check in the background to guarantee freshest status
+      SubscriptionService.checkMySubscription(forceRefresh: true)
+          .catchError((_) => UserSubscriptionStatus(hasAccess: false));
+
       return authResponse;
     } on DioException catch (e) {
       throw _handleError(e);
     }
   }
-
 
   /// Register — POST /auth/register
   /// Request: { username, email, phoneNumber, password }
@@ -118,15 +266,11 @@ class AuthApi {
   Future<void> logout() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final refreshToken = prefs.getString('refresh_token');
-      
-      if (refreshToken != null && refreshToken.isNotEmpty) {
-        try {
-          await _dioClient.dio.post('/auth/logout', data: {'refreshToken': refreshToken});
-        } catch (e) {
-          // If logout fails, still clear local storage
-          print('Logout API call failed: $e');
-        }
+      try {
+        await _dioClient.dio.post('/auth/signout');
+      } catch (e) {
+        // If logout fails, still clear local storage
+        print('Logout API call failed: $e');
       }
       
       // Clear all local storage
@@ -139,11 +283,16 @@ class AuthApi {
       await prefs.remove('user_phone');
       await prefs.remove('user_first_name');
       await prefs.remove('user_last_name');
+      await prefs.remove('user_profile_picture');
       await prefs.remove('saved_project_ids');
+      await SubscriptionService.clearSubscriptionCache();
+      await ApiClient.clearTokens();
     } catch (e) {
       // Clear local storage even if API call fails
       final prefs = await SharedPreferences.getInstance();
       await prefs.clear();
+      await SubscriptionService.clearSubscriptionCache();
+      await ApiClient.clearTokens();
     }
   }
   
@@ -154,6 +303,8 @@ class AuthApi {
       // Clear all local storage
       final prefs = await SharedPreferences.getInstance();
       await prefs.clear();
+      await SubscriptionService.clearSubscriptionCache();
+      await ApiClient.clearTokens();
     } on DioException catch (e) {
       throw _handleError(e);
     }
@@ -217,6 +368,7 @@ class AuthApi {
       'role': prefs.getString('user_role') ?? 'user',
       'firstName': prefs.getString('user_first_name'),
       'lastName': prefs.getString('user_last_name'),
+      'profilePicture': prefs.getString('user_profile_picture'),
     };
   }
 
@@ -285,26 +437,89 @@ class AuthApi {
     }
   }
 
-  /// Get user profile. Tries GET /auth/profile; on failure returns cached
-  /// values from SharedPreferences (from login/register). Backend may not
-  /// expose GET /auth/profile.
-  Future<Map<String, String?>> getUserProfile() async {
+  static Future<Map<String, String?>>? _getUserProfileInFlight;
+
+  /// Get user profile. Tries GET /users/profile; on failure returns cached
+  /// values from SharedPreferences (from login/register).
+  Future<Map<String, String?>> getUserProfile() {
+    if (_getUserProfileInFlight != null) {
+      print('⚡ Coalescing in-flight GET /users/profile request');
+      return _getUserProfileInFlight!;
+    }
+    _getUserProfileInFlight = _fetchUserProfile().whenComplete(() {
+      _getUserProfileInFlight = null;
+    });
+    return _getUserProfileInFlight!;
+  }
+
+  Future<Map<String, String?>> _fetchUserProfile() async {
     try {
-      final response = await _dioClient.dio.get('/auth/profile');
-      final d = response.data as Map<String, dynamic>?;
-      if (d == null) return _getCachedProfile();
+      final response = await _dioClient.dio.get('/users/profile');
+      final responseData = response.data;
+      debugPrint('═══════════════════════════════════════════');
+      debugPrint('📋 GET /users/profile — STATUS: ${response.statusCode}');
+      debugPrint('📋 RAW RESPONSE TYPE: ${responseData.runtimeType}');
+      debugPrint('📋 RAW RESPONSE DATA: $responseData');
+      debugPrint('═══════════════════════════════════════════');
+
+      Map<String, dynamic> d = {};
+      if (responseData is Map<String, dynamic>) {
+        if (responseData.containsKey('user') && responseData['user'] is Map) {
+          d = Map<String, dynamic>.from(responseData['user'] as Map);
+          debugPrint('📋 Unwrapped from "user" key');
+        } else if (responseData.containsKey('value') && responseData['value'] is Map) {
+          d = Map<String, dynamic>.from(responseData['value'] as Map);
+          debugPrint('📋 Unwrapped from "value" key');
+        } else if (responseData.containsKey('data') && responseData['data'] is Map) {
+          d = Map<String, dynamic>.from(responseData['data'] as Map);
+          debugPrint('📋 Unwrapped from "data" key');
+        } else {
+          d = responseData;
+          debugPrint('📋 Using response directly (no wrapper key)');
+        }
+      } else {
+        debugPrint('⚠️ Response is NOT a Map — falling back to cache');
+        return _getCachedProfile();
+      }
+
+      debugPrint('📋 UNWRAPPED MAP KEYS: ${d.keys.toList()}');
+      debugPrint('📋 UNWRAPPED MAP DATA: $d');
 
       final firstName = d['firstName']?.toString() ?? '';
       final lastName = d['lastName']?.toString() ?? '';
       final email = d['email']?.toString() ?? '';
       final phoneNumber = d['phoneNumber']?.toString() ?? '';
       final username = d['username']?.toString() ?? '';
+      final profilePicture = d['profilePicture']?.toString()
+          ?? d['avatar']?.toString()
+          ?? d['photo']?.toString()
+          ?? '';
+
+      debugPrint('📋 PARSED → firstName="$firstName", lastName="$lastName", username="$username"');
+      debugPrint('📋 PARSED → email="$email", phone="$phoneNumber"');
+      debugPrint('📋 PARSED → profilePicture="$profilePicture"');
+
+      // Parse and log subscription fields from user profile
+      debugPrint('💳 [AuthApi] Profile Subscription Fields -> isSubscribed: ${d['isSubscribed']}, subscription: ${d['subscription']}, hasAccess: ${d['hasAccess']}, hasActivePlan: ${d['hasActivePlan']}');
+      final userObj = UserModel.fromJson(d);
+      debugPrint('💳 [AuthApi] UserModel Subscription Result -> isSubscribed: ${userObj.isSubscribed}, status: "${userObj.subscriptionStatus}", plan: "${userObj.planName}"');
+      if (userObj.isSubscribed) {
+        await SubscriptionService.cacheSubscriptionStatus(
+          UserSubscriptionStatus(
+            hasAccess: true,
+            status: userObj.subscriptionStatus,
+            planName: userObj.planName,
+            rawData: d,
+          ),
+        );
+      }
 
       final prefs = await SharedPreferences.getInstance();
       if (firstName.isNotEmpty) await prefs.setString('user_first_name', firstName);
       if (lastName.isNotEmpty) await prefs.setString('user_last_name', lastName);
       if (email.isNotEmpty) await prefs.setString('user_email', email);
       if (phoneNumber.isNotEmpty) await prefs.setString('user_phone', phoneNumber);
+      if (profilePicture.isNotEmpty) await prefs.setString('user_profile_picture', profilePicture);
       if (firstName.isNotEmpty || lastName.isNotEmpty) {
         await prefs.setString('user_name', '$firstName $lastName'.trim());
       } else if (username.isNotEmpty) {
@@ -317,8 +532,11 @@ class AuthApi {
         'email': email,
         'phoneNumber': phoneNumber,
         'username': username,
+        'profilePicture': profilePicture,
       };
-    } on DioException catch (_) {
+    } on DioException catch (e) {
+      debugPrint('❌ GET /users/profile FAILED: ${e.type} — ${e.message}');
+      debugPrint('❌ Status: ${e.response?.statusCode}, Body: ${e.response?.data}');
       return _getCachedProfile();
     }
   }
@@ -333,6 +551,7 @@ class AuthApi {
       'email': prefs.getString('user_email') ?? '',
       'phoneNumber': prefs.getString('user_phone') ?? '',
       'username': prefs.getString('user_name') ?? (f.isNotEmpty || l.isNotEmpty ? '$f $l'.trim() : ''),
+      'profilePicture': prefs.getString('user_profile_picture') ?? '',
     };
   }
 
@@ -355,7 +574,7 @@ class AuthApi {
         throw Exception('Missing user id. Please login again.');
       }
 
-      await _dioClient.dio.patch('/users/$userId', data: {
+      await _dioClient.dio.patch('/users/profile', data: {
         'username': username,
         'email': email,
         'phoneNumber': phoneNumber,
@@ -381,7 +600,7 @@ class AuthApi {
         throw Exception('Missing user id. Please login again.');
       }
 
-      await _dioClient.dio.patch('/users/$userId', data: {'password': newPassword});
+      await _dioClient.dio.patch('/users/profile', data: {'password': newPassword});
       return true;
     } on DioException catch (e) {
       throw _handleError(e);

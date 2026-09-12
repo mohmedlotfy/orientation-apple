@@ -132,14 +132,15 @@ class _ContinueWatchingScreenState extends State<ContinueWatchingScreen> {
     final isAuth = await AuthHelper.requireAuth(context);
     if (!isAuth) return;
 
+    final isSaved = _savedProjects[project.id] ?? false;
+    setState(() {
+      _savedProjects[project.id] = !isSaved;
+    });
+
     try {
-      final isSaved = await _projectApi.isProjectSaved(project.id);
       if (isSaved) {
         await _projectApi.unsaveProject(project.id);
         if (mounted) {
-          setState(() {
-            _savedProjects[project.id] = false;
-          });
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text('Removed from saved'),
@@ -150,9 +151,6 @@ class _ContinueWatchingScreenState extends State<ContinueWatchingScreen> {
       } else {
         await _projectApi.saveProject(project.id);
         if (mounted) {
-          setState(() {
-            _savedProjects[project.id] = true;
-          });
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text('Saved!'),
@@ -163,6 +161,9 @@ class _ContinueWatchingScreenState extends State<ContinueWatchingScreen> {
       }
     } catch (e) {
       if (mounted) {
+        setState(() {
+          _savedProjects[project.id] = isSaved;
+        });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Error: ${e.toString()}'),

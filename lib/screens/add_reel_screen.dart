@@ -6,6 +6,7 @@ import '../services/api/project_api.dart';
 import '../services/api/auth_api.dart';
 import '../services/clip_service.dart';
 import '../models/project_model.dart';
+import '../utils/validators.dart';
 import 'dart:io';
 
 class AddReelScreen extends StatefulWidget {
@@ -160,7 +161,7 @@ class _AddReelScreenState extends State<AddReelScreen> {
       return;
     }
 
-    if (_titleController.text.trim().isEmpty) {
+    if (!Validators.isNonEmptyText(_titleController.text)) {
       _showSnackBar('Please enter a title', isError: true);
       return;
     }

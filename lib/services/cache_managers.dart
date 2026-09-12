@@ -15,15 +15,15 @@ class CacheManagerHome {
 }
 
 /// CacheManager for Reels page media (thumbnails and videos)
-/// DISABLED: Video caching is disabled (maxNrOfCacheObjects: 0)
+/// Bounded cache: 25 objects max with 2-day expiration to prevent storage bloat
 class CacheManagerReels {
   static const String key = 'reelsCacheKey';
   
   static CacheManager instance = CacheManager(
     Config(
       key,
-      stalePeriod: const Duration(days: 0), // No caching
-      maxNrOfCacheObjects: 0, // Disable caching completely
+      stalePeriod: const Duration(days: 2),
+      maxNrOfCacheObjects: 25,
     ),
   );
 }

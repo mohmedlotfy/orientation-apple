@@ -2,6 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import 'package:chewie/chewie.dart';
 import 'package:visibility_detector/visibility_detector.dart';
+import 'package:url_launcher/url_launcher.dart';
+import '../config/api_config.dart';
+import '../core/api_client.dart';
+import '../services/subscription_service.dart';
+import '../services/project_service.dart';
 import '../widgets/project_card.dart';
 import '../widgets/app_drawer.dart';
 import '../widgets/skeleton_loader.dart';
@@ -23,6 +28,7 @@ import 'search_screen.dart';
 import 'continue_watching_screen.dart';
 import 'account_screen.dart';
 import 'login_screen.dart';
+import '../services/user_service.dart';
 
 class HomeFeedScreen extends StatefulWidget {
   const HomeFeedScreen({super.key});
@@ -37,6 +43,7 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
   final ScrollController _scrollController = ScrollController();
   final HomeApi _homeApi = HomeApi();
   final AuthApi _authApi = AuthApi();
+  final UserService _userService = UserService();
   final CacheService _cacheService = CacheService();
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final GlobalKey<AppDrawerState> _drawerKey = GlobalKey<AppDrawerState>();
@@ -45,7 +52,8 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
   int _currentFeaturedPage = 0;
   String _selectedFilter = 'Medical';
   bool _isLoading = true;
-  String _userName = 'User';
+  String _userName = 'Guest';
+  bool _isUserNameLoading = true;
   DateTime? _lastRefreshTime;
 
   final List<String> _filters = [
@@ -71,48 +79,65 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
   List<ProjectModel> _latestProjects = [];
   List<ProjectModel> _continueWatching = [];
   List<ProjectModel> _top10Projects = [];
-  List<ProjectModel> _northCoastProjects = [];
+  List<ProjectSummary> _freeProjects = [];
+  bool _isFreeProjectsLoading = false;
+  String? _freeProjectsError;
   List<ProjectModel> _newCairoProjects = [];
   List<ProjectModel> _octoberProjects = [];
   List<ProjectModel> _upcomingProjects = [];
   List<DeveloperModel> _developers = [];
   List<AreaModel> _areas = [];
 
+  // Section lazy loading flags (Viewport-based)
+  bool _hasLoadedFreeProjects = false;
+  bool _hasLoadedTop10 = false;
+  bool _hasLoadedNewCairo = false;
+  bool _hasLoadedOctober = false;
+  bool _hasLoadedUpcoming = false;
+  bool _hasLoadedAreas = false;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _featuredController.addListener(_onFeaturedScroll);
-    _scrollController.addListener(_onScroll);
     // Load data asynchronously to avoid blocking UI
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       _loadData();
       _loadUserName();
+      debugPrint('Welcome Pop-up Debug: Checking login status...');
+      try {
+        final isLoggedIn = await _authApi.isLoggedIn();
+        debugPrint('Welcome Pop-up Debug: isLoggedIn = $isLoggedIn');
+        if (!isLoggedIn || !mounted) {
+          debugPrint('Welcome Pop-up Debug: Dialog skipped (user is Guest or unauthenticated)');
+          return;
+        }
+
+        debugPrint('Welcome Pop-up Debug: User is logged in, checking subscription status...');
+        final status = SubscriptionService.currentSubscriptionStatus;
+        debugPrint('Welcome Pop-up Debug: Subscription status hasAccess = ${status.hasAccess}');
+        if (!status.hasAccess && mounted) {
+          final stillLoggedIn = await _authApi.isLoggedIn();
+          if (stillLoggedIn && mounted) {
+            debugPrint('Welcome Pop-up Debug: Showing welcome subscription dialog...');
+            _showWelcomeDialog();
+          }
+        } else {
+          debugPrint('Welcome Pop-up Debug: Dialog skipped (hasAccess = true or not mounted)');
+        }
+      } catch (error) {
+        debugPrint('Welcome Pop-up Debug: Error checking subscription status: $error');
+        if (mounted) {
+          final stillLoggedIn = await _authApi.isLoggedIn();
+          if (stillLoggedIn && mounted) {
+            debugPrint('Welcome Pop-up Debug: Showing welcome subscription dialog on error fallback...');
+            _showWelcomeDialog();
+          }
+        }
+      }
     });
     // Video will be initialized after loading data (in _loadData)
-  }
-
-  void _onScroll() {
-    // Lazy load area projects when user scrolls near those sections
-    final position = _scrollController.position;
-    if (!position.hasContentDimensions) return;
-
-    // Calculate approximate scroll position for area sections
-    // This is a simple heuristic - adjust based on your actual layout
-    final scrollOffset = position.pixels;
-
-    // Load North Coast projects when scrolling past ~2000px
-    if (scrollOffset > 2000 && _northCoastProjects.isEmpty) {
-      _loadAreaProjectsIfNeeded('North Coast');
-    }
-    // Load New Cairo projects when scrolling past ~3000px
-    if (scrollOffset > 3000 && _newCairoProjects.isEmpty) {
-      _loadAreaProjectsIfNeeded('New Cairo');
-    }
-    // Load October projects when scrolling past ~4000px
-    if (scrollOffset > 4000 && _octoberProjects.isEmpty) {
-      _loadAreaProjectsIfNeeded('October');
-    }
   }
 
   void _onFeaturedScroll() {
@@ -303,15 +328,13 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
   }
 
   void _playVideoForPage(int index) {
-    // Store previous index
-    final previousIndex = _currentVideoIndex;
-
-    // Pause previous video first
-    if (previousIndex >= 0 &&
-        previousIndex != index &&
-        _videoControllers.containsKey(previousIndex)) {
-      _videoControllers[previousIndex]?.pause();
-    }
+    // Pause all other videos
+    _videoControllers.forEach((key, controller) {
+      if (key != index && controller.value.isPlaying) {
+        controller.pause();
+        print('⏸️ Paused video for page $key');
+      }
+    });
 
     // Play current video if it's loaded
     if (_videoControllers.containsKey(index)) {
@@ -320,6 +343,11 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
         controller.play();
       }
       print('▶️ Playing video for page $index');
+      if (_currentVideoIndex != index && mounted) {
+        setState(() {
+          _currentVideoIndex = index;
+        });
+      }
     } else {
       // Video not loaded yet, load it first
       _loadVideoForPage(index).then((_) {
@@ -357,32 +385,33 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
     }
   }
 
+  bool _isHomeActive = true;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // Refresh continue watching when screen becomes visible again (with debounce)
-    final now = DateTime.now();
-    if (_lastRefreshTime == null ||
-        now.difference(_lastRefreshTime!).inSeconds > 2) {
-      _lastRefreshTime = now;
-      _refreshContinueWatching();
-    }
+    // Do NOT trigger background network calls on dependency rebuilds
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      // Refresh continue watching when app comes back to foreground
+    if (state == AppLifecycleState.resumed && _isHomeActive) {
+      // Refresh continue watching only if home tab is currently active
       _refreshContinueWatching();
     }
   }
 
   Future<void> _refreshContinueWatching() async {
+    if (!_isHomeActive) {
+      print('⏸️ Skipping continue watching refresh - Home tab is inactive');
+      return;
+    }
+
     try {
       print('🔄 Refreshing continue watching...');
       final continueWatching = await _homeApi.getContinueWatching();
       print('📊 Got ${continueWatching.length} continue watching projects');
-      if (mounted) {
+      if (mounted && _isHomeActive) {
         setState(() {
           _continueWatching = continueWatching;
           _lastRefreshTime = DateTime.now();
@@ -390,7 +419,7 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
         print(
             '✅ Continue watching updated in UI: ${_continueWatching.length} projects');
       } else {
-        print('⚠️ Widget not mounted, skipping setState');
+        print('⚠️ Widget not mounted or inactive, skipping setState');
       }
     } catch (e, stackTrace) {
       print('❌ Error refreshing continue watching: $e');
@@ -399,12 +428,113 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
     }
   }
 
-  // Public method to refresh continue watching (can be called from MainScreen)
+  // Public method to refresh continue watching (can be called from MainScreen when switching to Home)
   void refreshContinueWatching() {
+    _isHomeActive = true;
     _refreshContinueWatching();
   }
 
-  // Test method to add sample progress (for debugging)
+
+  Future<void> _showWelcomeDialog() async {
+    final isLoggedIn = await _authApi.isLoggedIn();
+    if (!isLoggedIn || !mounted) {
+      debugPrint('Welcome Pop-up: Skipped showing welcome dialog - user is guest or not authenticated.');
+      return;
+    }
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (BuildContext context) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Flexible(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(20),
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxHeight: MediaQuery.of(context).size.height * 0.7,
+                          minWidth: double.infinity,
+                        ),
+                        child: Image.asset(
+                          'assets/images/welcome_promo.jpg',
+                          fit: BoxFit.cover,
+                          width: double.infinity,
+                        ),
+                      ),
+                      Positioned(
+                        top: 16,
+                        right: 16,
+                        child: GestureDetector(
+                          onTap: () => Navigator.of(context).pop(),
+                          child: Container(
+                            padding: const EdgeInsets.all(6),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withOpacity(0.5),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(
+                              Icons.close,
+                              color: Colors.white,
+                              size: 18,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: SizedBox(
+                  width: double.infinity,
+                  height: 40,
+                  child: ElevatedButton(
+                    onPressed: () async {
+                      Navigator.of(context).pop();
+                      final Uri url = Uri.parse(ApiConfig.checkoutUrl);
+                      try {
+                        if (await canLaunchUrl(url)) {
+                          await launchUrl(url, mode: LaunchMode.externalApplication);
+                        }
+                      } catch (e) {
+                        print('Error launching URL: $e');
+                      }
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: brandRed,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      elevation: 0,
+                    ),
+                    child: const Text(
+                      'Watch more orientation',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   Future<void> _loadUserName() async {
     final isLoggedIn = await _authApi.isLoggedIn();
     if (!mounted) return;
@@ -412,24 +542,69 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
     if (!isLoggedIn) {
       setState(() {
         _userName = 'Guest';
+        _isUserNameLoading = false;
       });
       return;
     }
 
-    // User is logged in, load user info
+    // 1. Check cached info for instant UI loading
     final userInfo = await _authApi.getStoredUserInfo();
     if (!mounted) return;
 
-    setState(() {
-      // Use firstName + lastName if available, otherwise fallback to username
-      final firstName = userInfo['firstName'] ?? '';
-      final lastName = userInfo['lastName'] ?? '';
-      if (firstName.isNotEmpty || lastName.isNotEmpty) {
-        _userName = '$firstName $lastName'.trim();
-      } else {
-        _userName = userInfo['username'] ?? 'User';
+    final cachedFirstName = userInfo['firstName'] ?? '';
+    final cachedLastName = userInfo['lastName'] ?? '';
+    final cachedUsername = userInfo['username'] ?? '';
+
+    String initialName = 'Guest';
+    if (cachedFirstName.isNotEmpty) {
+      initialName = cachedFirstName;
+    } else if (cachedLastName.isNotEmpty) {
+      initialName = cachedLastName;
+    } else if (cachedUsername.isNotEmpty) {
+      initialName = cachedUsername;
+    }
+
+    if (mounted) {
+      setState(() {
+        _userName = initialName;
+        // If we found a cached name, display it immediately
+        _isUserNameLoading = (initialName == 'Guest');
+      });
+    }
+
+    // 2. Fetch fresh user profile via UserService
+    try {
+      final freshProfile = await _userService.getProfile();
+      if (!mounted) return;
+
+      final firstName = freshProfile['firstName'] ?? '';
+      final lastName = freshProfile['lastName'] ?? '';
+      final username = freshProfile['username'] ?? '';
+
+      String nameToDisplay = 'Guest';
+      if (firstName.isNotEmpty) {
+        nameToDisplay = firstName;
+      } else if (lastName.isNotEmpty) {
+        nameToDisplay = lastName;
+      } else if (username.isNotEmpty) {
+        nameToDisplay = username;
       }
-    });
+
+      setState(() {
+        _userName = nameToDisplay;
+        _isUserNameLoading = false;
+      });
+    } catch (e) {
+      print('Error fetching user profile from UserService: $e');
+      if (mounted) {
+        setState(() {
+          if (_userName == 'User' || _userName.isEmpty) {
+            _userName = 'Guest';
+          }
+          _isUserNameLoading = false;
+        });
+      }
+    }
   }
 
   // Public method to refresh user name (called from MainScreen)
@@ -440,9 +615,9 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
   Future<void> _loadData() async {
     print('🔄 Starting _loadData()...');
     try {
-      // Priority 1: Load essential data first (visible immediately)
-      print('📡 Loading essential data (Priority 1)...');
-      final essentialResults = await Future.wait([
+      // Fetch ONLY essential top-of-page data
+      print('📡 Fetching essential home data (Featured [3], Latest [10], Continue Watching)...');
+      final results = await Future.wait([
         _homeApi.getFeaturedProjects(useCache: true).catchError((e) {
           print('Error loading featured projects: $e');
           return <ProjectModel>[];
@@ -457,16 +632,14 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
         }),
       ]);
 
-      // Update UI with essential data first
       if (mounted) {
-        final allFeatured = essentialResults[0] as List<ProjectModel>;
-        final featuredOnly = allFeatured.where((p) => p.isFeatured).toList();
-        final latest = essentialResults[1] as List<ProjectModel>;
-        final continueWatching = essentialResults[2] as List<ProjectModel>;
+        final allFeatured = results[0] as List<ProjectModel>;
+        final featuredOnly = allFeatured.map((p) => p.copyWith(isFeatured: true)).toList();
+        final latest = results[1] as List<ProjectModel>;
+        final continueWatching = results[2] as List<ProjectModel>;
 
-        print('📊 Data received:');
-        print(
-            '   Featured (all): ${allFeatured.length}, Featured (filtered): ${featuredOnly.length}');
+        print('📊 Essential data received:');
+        print('   Featured: ${featuredOnly.length}');
         print('   Latest: ${latest.length}');
         print('   Continue Watching: ${continueWatching.length}');
 
@@ -474,27 +647,17 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
           _featuredProjects = featuredOnly;
           _latestProjects = latest;
           _continueWatching = continueWatching;
-          _isLoading = false; // Show UI immediately
+          _isLoading = false;
         });
-        print(
-            '✅ Essential data loaded and UI updated. Featured: ${_featuredProjects.length}, Latest: ${_latestProjects.length}, Continue: ${_continueWatching.length}');
-        _initializeVideo(); // Initialize video with featured projects
 
-        // Cache home content in background (non-blocking)
-        // Combines all project lists for caching
-        final allProjects = <ProjectModel>[
+        _initializeVideo();
+
+        _cacheService.cacheHomeContent([
           ...featuredOnly,
           ...latest,
           ...continueWatching,
-        ];
-        _cacheService.cacheHomeContent(allProjects);
-      } else {
-        print('⚠️ Widget not mounted, skipping setState');
+        ]);
       }
-
-      // Priority 2: Load secondary data in background (lazy load)
-      print('📡 Loading secondary data (Priority 2 - background)...');
-      _loadSecondaryData();
     } catch (e) {
       print('❌ Unexpected error in _loadData: $e');
       if (mounted) {
@@ -505,76 +668,124 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
     }
   }
 
-  Future<void> _loadSecondaryData() async {
+  // Viewport-based lazy loading methods for deferred sections
+  Future<void> _loadFreeProjectsLazy() async {
+    if (_hasLoadedFreeProjects) return;
+    _hasLoadedFreeProjects = true;
+    setState(() => _isFreeProjectsLoading = true);
     try {
-      // Load secondary data in background (not blocking UI)
-      final results = await Future.wait([
-        _homeApi.getTop10Projects(useCache: true).catchError((e) {
-          print('Error loading top 10 projects: $e');
-          return <ProjectModel>[];
-        }),
-        _homeApi.getUpcomingProjects(useCache: true).catchError((e) {
-          print('Error loading upcoming projects: $e');
-          return <ProjectModel>[];
-        }),
-        _homeApi.getDevelopers().catchError((e) {
-          print('Error loading developers: $e');
-          return <DeveloperModel>[];
-        }),
-        _homeApi.getAreas().catchError((e) {
-          print('Error loading areas: $e');
-          return <AreaModel>[];
-        }),
-      ]);
-
+      print('📡 Lazy loading Free projects...');
+      final freeProj = await ProjectService.getFreeProjects();
       if (mounted) {
         setState(() {
-          _top10Projects = results[0] as List<ProjectModel>;
-          _upcomingProjects = results[1] as List<ProjectModel>;
-          _developers = results[2] as List<DeveloperModel>;
-          _areas = results[3] as List<AreaModel>;
+          _freeProjects = freeProj;
+          _isFreeProjectsLoading = false;
+          _freeProjectsError = null;
         });
-        print('✅ Secondary data loaded');
+        print('✅ Free projects loaded: ${_freeProjects.length}');
       }
-
-      // Priority 3: Load area-specific projects immediately (not lazy)
-      print('📡 Loading area projects...');
-      await Future.wait([
-        _loadAreaProjectsIfNeeded('North Coast'),
-        _loadAreaProjectsIfNeeded('New Cairo'),
-        _loadAreaProjectsIfNeeded('October'),
-      ]);
-      print('✅ Area projects loaded');
     } catch (e) {
-      print('❌ Error loading secondary data: $e');
+      print('❌ Error loading free projects: $e');
+      if (mounted) {
+        setState(() {
+          _isFreeProjectsLoading = false;
+          _freeProjectsError = e.toString();
+        });
+      }
     }
   }
 
-  // Lazy load area projects when user scrolls to that section
-  Future<void> _loadAreaProjectsIfNeeded(String area) async {
-    // Check if already loaded
-    if (area == 'North Coast' && _northCoastProjects.isNotEmpty) return;
-    if (area == 'New Cairo' && _newCairoProjects.isNotEmpty) return;
-    if (area == 'October' && _octoberProjects.isNotEmpty) return;
-
+  Future<void> _loadTop10Lazy() async {
+    if (_hasLoadedTop10) return;
+    _hasLoadedTop10 = true;
     try {
-      print('📡 Lazy loading projects for area: $area');
-      final projects = await _homeApi.getProjectsByArea(area, useCache: true);
+      print('📡 Lazy loading Top 10 projects...');
+      final projects = await _homeApi.getTop10Projects(useCache: true);
       if (mounted) {
-        setState(() {
-          if (area == 'North Coast') {
-            _northCoastProjects = projects;
-          } else if (area == 'New Cairo') {
-            _newCairoProjects = projects;
-          } else if (area == 'October') {
-            _octoberProjects = projects;
-          }
-        });
-        print('✅ Loaded ${projects.length} projects for $area');
+        setState(() => _top10Projects = projects);
+        print('✅ Top 10 loaded: ${projects.length}');
       }
     } catch (e) {
-      print('❌ Error loading projects for $area: $e');
+      print('❌ Error loading top 10 projects: $e');
     }
+  }
+
+  Future<void> _loadNewCairoLazy() async {
+    if (_hasLoadedNewCairo) return;
+    _hasLoadedNewCairo = true;
+    try {
+      print('📡 Lazy loading New Cairo projects...');
+      final projects = await _homeApi.getProjectsByArea('New Cairo', useCache: true);
+      if (mounted) {
+        setState(() => _newCairoProjects = projects);
+        print('✅ New Cairo projects loaded: ${projects.length}');
+      }
+    } catch (e) {
+      print('❌ Error loading New Cairo projects: $e');
+    }
+  }
+
+  Future<void> _loadOctoberLazy() async {
+    if (_hasLoadedOctober) return;
+    _hasLoadedOctober = true;
+    try {
+      print('📡 Lazy loading October projects...');
+      final projects = await _homeApi.getProjectsByArea('October', useCache: true);
+      if (mounted) {
+        setState(() => _octoberProjects = projects);
+        print('✅ October projects loaded: ${projects.length}');
+      }
+    } catch (e) {
+      print('❌ Error loading October projects: $e');
+    }
+  }
+
+  Future<void> _loadUpcomingLazy() async {
+    if (_hasLoadedUpcoming) return;
+    _hasLoadedUpcoming = true;
+    try {
+      print('📡 Lazy loading Upcoming projects...');
+      final projects = await _homeApi.getUpcomingProjects(useCache: true);
+      if (mounted) {
+        setState(() => _upcomingProjects = projects);
+        print('✅ Upcoming projects loaded: ${projects.length}');
+      }
+    } catch (e) {
+      print('❌ Error loading upcoming projects: $e');
+    }
+  }
+
+  Future<void> _loadAreasLazy() async {
+    if (_hasLoadedAreas) return;
+    _hasLoadedAreas = true;
+    try {
+      print('📡 Lazy loading developers & areas...');
+      final results = await Future.wait([
+        _homeApi.getDevelopers().catchError((e) => <DeveloperModel>[]),
+        _homeApi.getAreas().catchError((e) => <AreaModel>[]),
+      ]);
+      if (mounted) {
+        setState(() {
+          _developers = results[0] as List<DeveloperModel>;
+          _areas = results[1] as List<AreaModel>;
+        });
+        print('✅ Developers & areas loaded');
+      }
+    } catch (e) {
+      print('❌ Error loading developers/areas: $e');
+    }
+  }
+
+  Widget _buildHorizontalSkeletonList({bool isLarge = false}) {
+    return SizedBox(
+      height: isLarge ? 280 : 150,
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        itemCount: 4,
+        itemBuilder: (context, index) => SkeletonProjectCard(isLarge: isLarge),
+      ),
+    );
   }
 
   // _videoListener is now handled by _videoListenerForIndex
@@ -599,6 +810,7 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
 
   /// Pause all videos (called when switching away from Home tab)
   void pauseVideos() {
+    _isHomeActive = false;
     for (var controller in _videoControllers.values) {
       if (controller.value.isPlaying) {
         controller.pause();
@@ -608,10 +820,12 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
 
   /// Resume video playback (called when switching back to Home tab)
   void resumeVideos() {
+    _isHomeActive = true;
     if (_isHeroVisible && _videoControllers.containsKey(_currentVideoIndex)) {
       _videoControllers[_currentVideoIndex]?.play();
     }
   }
+
 
   void scrollToUpcomingProjects() {
     // Scroll to upcoming projects section using the key
@@ -657,7 +871,7 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
           SliverToBoxAdapter(
             child: _buildPageIndicator(),
           ),
-          // Sections
+          // Essential: The latest for us
           SliverToBoxAdapter(
             child: _buildSection(
               'The latest for us',
@@ -672,10 +886,42 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
                   ),
                 );
               },
-              child: _buildHorizontalProjectList(),
+              child: !_isLoading
+                  ? _buildHorizontalProjectList()
+                  : _buildHorizontalSkeletonList(),
             ),
           ),
-          // Only show "Continue watching" section if there are videos or still loading
+          // Free projects (Lazy Loaded)
+          SliverToBoxAdapter(
+            child: VisibilityDetector(
+              key: const Key('section_free_projects'),
+              onVisibilityChanged: (info) {
+                if (info.visibleFraction > 0.1 && !_hasLoadedFreeProjects) {
+                  _loadFreeProjectsLazy();
+                }
+              },
+              child: _buildSection(
+                'Free projects',
+                onViewAll: () async {
+                  final isAuth = await AuthHelper.requireAuth(context);
+                  if (!isAuth) return;
+
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const ProjectsListScreen(
+                        title: 'Free projects',
+                      ),
+                    ),
+                  );
+                },
+                child: _hasLoadedFreeProjects && !_isFreeProjectsLoading
+                    ? _buildFreeProjectsList()
+                    : _buildHorizontalSkeletonList(),
+              ),
+            ),
+          ),
+          // Continue watching section
           if (_continueWatching.isNotEmpty || _isLoading)
             SliverToBoxAdapter(
               child: _buildSection(
@@ -691,107 +937,142 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
                     ),
                   );
                 },
-                child: _buildContinueWatchingList(),
+                child: _continueWatching.isNotEmpty
+                    ? _buildContinueWatchingList()
+                    : _buildHorizontalSkeletonList(isLarge: true),
               ),
             ),
+          // Top 10 (Lazy Loaded)
           SliverToBoxAdapter(
-            child: _buildSection(
-              'Top 10',
-              onViewAll: () async {
-                final isAuth = await AuthHelper.requireAuth(context);
-                if (!isAuth) return;
-
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => const Top10Screen(),
-                  ),
-                );
+            child: VisibilityDetector(
+              key: const Key('section_top10'),
+              onVisibilityChanged: (info) {
+                if (info.visibleFraction > 0.1 && !_hasLoadedTop10) {
+                  _loadTop10Lazy();
+                }
               },
-              child: _buildTop10List(),
-            ),
-          ),
-          SliverToBoxAdapter(
-            child: _buildSection(
-              'Projects in Northcoast',
-              onViewAll: () async {
-                final isAuth = await AuthHelper.requireAuth(context);
-                if (!isAuth) return;
+              child: _buildSection(
+                'Top 10',
+                onViewAll: () async {
+                  final isAuth = await AuthHelper.requireAuth(context);
+                  if (!isAuth) return;
 
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => const ProjectsListScreen(
-                      title: 'Projects in Northcoast',
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const Top10Screen(),
                     ),
-                  ),
-                );
-              },
-              child: _buildNorthcoastProjects(),
+                  );
+                },
+                child: _hasLoadedTop10
+                    ? _buildTop10List()
+                    : _buildHorizontalSkeletonList(),
+              ),
             ),
           ),
+          // Projects in New Cairo (Lazy Loaded)
           SliverToBoxAdapter(
-            child: _buildSection(
-              'Projects in New Cairo',
-              onViewAll: () async {
-                final isAuth = await AuthHelper.requireAuth(context);
-                if (!isAuth) return;
-
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => const ProjectsListScreen(
-                      title: 'Projects in New Cairo',
-                    ),
-                  ),
-                );
+            child: VisibilityDetector(
+              key: const Key('section_new_cairo'),
+              onVisibilityChanged: (info) {
+                if (info.visibleFraction > 0.1 && !_hasLoadedNewCairo) {
+                  _loadNewCairoLazy();
+                }
               },
-              child: _buildNewCairoProjects(),
+              child: _buildSection(
+                'Projects in New Cairo',
+                onViewAll: () async {
+                  final isAuth = await AuthHelper.requireAuth(context);
+                  if (!isAuth) return;
+
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const ProjectsListScreen(
+                        title: 'Projects in New Cairo',
+                      ),
+                    ),
+                  );
+                },
+                child: _hasLoadedNewCairo
+                    ? _buildNewCairoProjects()
+                    : _buildHorizontalSkeletonList(),
+              ),
             ),
           ),
+          // Projects in October (Lazy Loaded)
           SliverToBoxAdapter(
-            child: _buildSection(
-              'Projects in October',
-              onViewAll: () async {
-                final isAuth = await AuthHelper.requireAuth(context);
-                if (!isAuth) return;
-
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => const ProjectsListScreen(
-                      title: 'Projects in October',
-                    ),
-                  ),
-                );
+            child: VisibilityDetector(
+              key: const Key('section_october'),
+              onVisibilityChanged: (info) {
+                if (info.visibleFraction > 0.1 && !_hasLoadedOctober) {
+                  _loadOctoberLazy();
+                }
               },
-              child: _buildOctoberProjects(),
+              child: _buildSection(
+                'Projects in October',
+                onViewAll: () async {
+                  final isAuth = await AuthHelper.requireAuth(context);
+                  if (!isAuth) return;
+
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const ProjectsListScreen(
+                        title: 'Projects in October',
+                      ),
+                    ),
+                  );
+                },
+                child: _hasLoadedOctober
+                    ? _buildOctoberProjects()
+                    : _buildHorizontalSkeletonList(),
+              ),
             ),
           ),
+          // Upcoming Projects (Lazy Loaded)
           SliverToBoxAdapter(
             key: _upcomingSectionKey,
-            child: _buildSection(
-              'Upcoming Projects',
-              onViewAll: null,
-              child: _buildUpcomingProjectsList(),
+            child: VisibilityDetector(
+              key: const Key('section_upcoming'),
+              onVisibilityChanged: (info) {
+                if (info.visibleFraction > 0.1 && !_hasLoadedUpcoming) {
+                  _loadUpcomingLazy();
+                }
+              },
+              child: _buildSection(
+                'Upcoming Projects',
+                onViewAll: null,
+                child: _hasLoadedUpcoming
+                    ? _buildUpcomingProjectsList()
+                    : _buildHorizontalSkeletonList(),
+              ),
             ),
           ),
-
+          // Discover Areas (Lazy Loaded)
           SliverToBoxAdapter(
-            child: _buildSection(
-              'Discover Areas',
-              onViewAll: () async {
-                final isAuth = await AuthHelper.requireAuth(context);
-                if (!isAuth) return;
-
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => const AreasScreen(),
-                  ),
-                );
+            child: VisibilityDetector(
+              key: const Key('section_discover_areas'),
+              onVisibilityChanged: (info) {
+                if (info.visibleFraction > 0.1 && !_hasLoadedAreas) {
+                  _loadAreasLazy();
+                }
               },
-              child: _buildAreaChips(),
+              child: _buildSection(
+                'Discover Areas',
+                onViewAll: () async {
+                  final isAuth = await AuthHelper.requireAuth(context);
+                  if (!isAuth) return;
+
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const AreasScreen(),
+                    ),
+                  );
+                },
+                child: _buildAreaChips(),
+              ),
             ),
           ),
           const SliverToBoxAdapter(
@@ -862,7 +1143,7 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
                   _loadVideoForPage(index - 1);
                 }
               },
-              itemCount: _featuredProjects.length > 3 ? 3 : _featuredProjects.length,
+              itemCount: _featuredProjects.length,
               itemBuilder: (context, index) {
                 final project = _featuredProjects[index];
                 return _buildFeaturedCard(context, project, index);
@@ -1027,7 +1308,6 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
     // Use video player for current card if video is loaded and available
     final bool isCurrentPage = _currentFeaturedPage == index;
     final bool hasVideoLoaded = _videoControllers.containsKey(index) &&
-        _chewieControllers.containsKey(index) &&
         _videoControllers[index]!.value.isInitialized;
 
     // During swipe: ONLY show videos (current + neighbor), never images for video projects.
@@ -1037,6 +1317,11 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
     final bool useVideo = isVideoFile &&
         hasVideoLoaded &&
         (isSwipeVisiblePage || (!_isSwipingFeatured && isCurrentPage));
+
+    final bool isImageVideo = project.image.isNotEmpty &&
+        (project.image.contains('.mp4') ||
+            project.image.contains('.mov') ||
+            project.image.contains('.webm'));
 
     print(
         '🎬 Hero Card $index: hasVideoUrl=$hasVideoUrl, isVideoFile=$isVideoFile, useVideo=$useVideo, currentPage=$_currentFeaturedPage, currentVideoIndex=$_currentVideoIndex, hasVideoLoaded=$hasVideoLoaded, videoUrl=${project.advertisementVideoUrl}');
@@ -1101,7 +1386,7 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
                       );
                     },
                   )
-                : project.image.isNotEmpty
+                : project.image.isNotEmpty && !isImageVideo
                     ? Image.network(
                         project.image,
                         fit: BoxFit.cover,
@@ -1331,14 +1616,25 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
                   fontSize: 12,
                 ),
               ),
-              Text(
-                _userName,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
+              if (_isUserNameLoading)
+                Container(
+                  margin: const EdgeInsets.only(top: 2, bottom: 2),
+                  width: 55,
+                  height: 12,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                )
+              else
+                Text(
+                  _userName,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
-              ),
             ],
           ),
           const Spacer(),
@@ -1437,12 +1733,18 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
   }
 
   Widget _buildPageIndicator() {
+    int dotCount = _featuredProjects.length;
+    if (dotCount > 3) dotCount = 3;
+    
+    int activeIndex = _currentFeaturedPage;
+    if (activeIndex >= 3) activeIndex = 2; // Cap at max index 2
+
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 16),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
-        children: List.generate(_featuredProjects.length > 3 ? 3 : _featuredProjects.length, (index) {
-          final isActive = index == _currentFeaturedPage;
+        children: List.generate(dotCount, (index) {
+          final isActive = index == activeIndex;
           return AnimatedContainer(
             duration: const Duration(milliseconds: 300),
             width: isActive ? 24 : 8,
@@ -1506,9 +1808,29 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
     );
   }
 
+  Widget _buildEmptyStateWidget(String message, {double height = 150}) {
+    return SizedBox(
+      height: height,
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: Text(
+            message,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: Colors.white.withOpacity(0.5),
+              fontSize: 14,
+              fontWeight: FontWeight.w400,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildHorizontalProjectList() {
     if (_latestProjects.isEmpty) {
-      return const SizedBox.shrink();
+      return _buildEmptyStateWidget('No projects available at the moment', height: 200);
     }
 
     return SizedBox(
@@ -1533,6 +1855,238 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
             ),
           );
         },
+      ),
+    );
+  }
+
+  Widget _buildFreeProjectsList() {
+    if (_isFreeProjectsLoading) {
+      return SizedBox(
+        height: 135,
+        child: ListView.builder(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          itemCount: 3,
+          itemBuilder: (context, index) {
+            return Padding(
+              padding: const EdgeInsets.only(right: 12),
+              child: Container(
+                width: 210,
+                height: 120,
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.05),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Center(
+                  child: SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white30),
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+      );
+    }
+
+    if (_freeProjectsError != null || _freeProjects.isEmpty) {
+      return Container(
+        height: 120,
+        margin: const EdgeInsets.symmetric(horizontal: 16),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.02),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: Colors.white.withOpacity(0.05),
+          ),
+        ),
+        child: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.info_outline,
+                color: Colors.white.withOpacity(0.3),
+                size: 24,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'No free projects available right now.',
+                style: TextStyle(
+                  color: Colors.white.withOpacity(0.5),
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return SizedBox(
+      height: 135,
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        itemCount: _freeProjects.length,
+        itemBuilder: (context, index) {
+          final project = _freeProjects[index];
+          return Padding(
+            padding: EdgeInsets.only(
+                right: index < _freeProjects.length - 1 ? 12 : 0),
+            child: _buildFreeCard(
+              project: project,
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildFreeCard({
+    required ProjectSummary project,
+  }) {
+    return GestureDetector(
+      onTap: () async {
+        final result = await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => ProjectDetailsScreen(
+              projectId: project.id,
+              initialTabIndex: 1, // Open on Episodes tab
+            ),
+          ),
+        );
+        // Refresh continue watching if episode was watched
+        if (result == true) {
+          print('🔄 Episode was watched, refreshing continue watching...');
+          await _refreshContinueWatching();
+          print('✅ Continue watching refreshed after watching episode');
+        }
+      },
+      child: Container(
+        width: 210,
+        height: 120,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.4),
+              blurRadius: 8,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              // Background Image
+              project.thumbnailUrl != null && project.thumbnailUrl!.isNotEmpty
+                  ? Image.network(
+                      project.thumbnailUrl!,
+                      fit: BoxFit.cover,
+                      errorBuilder: (context, error, stackTrace) {
+                        return Container(
+                          decoration: const BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [Color(0xFF1E1E1E), Color(0xFF2C2C2C)],
+                            ),
+                          ),
+                        );
+                      },
+                    )
+                  : Container(
+                      decoration: const BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [Color(0xFF1E1E1E), Color(0xFF2C2C2C)],
+                        ),
+                      ),
+                    ),
+              // Gradient overlay
+              Container(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.transparent,
+                      Colors.black.withOpacity(0.85),
+                    ],
+                    stops: const [0.4, 1.0],
+                  ),
+                ),
+              ),
+              // "Free" Badge
+              Positioned(
+                top: 8,
+                right: 8,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: brandRed,
+                    borderRadius: BorderRadius.circular(6),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.3),
+                        blurRadius: 4,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: const Text(
+                    'FREE',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 9,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ),
+              ),
+              // Text content
+              Positioned(
+                left: 12,
+                right: 12,
+                bottom: 10,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      project.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    if (project.location != null && project.location!.isNotEmpty)
+                      Text(
+                        project.location!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: Colors.white.withOpacity(0.7),
+                          fontSize: 10,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1885,7 +2439,7 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
 
   Widget _buildTop10List() {
     if (_top10Projects.isEmpty) {
-      return const SizedBox.shrink();
+      return _buildEmptyStateWidget('No top projects available at the moment', height: 175);
     }
 
     final displayProjects = _top10Projects.take(10).toList();
@@ -1945,70 +2499,9 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
     );
   }
 
-  Widget _buildNorthcoastProjects() {
-    // Show loading indicator if data is being loaded
-    if (_isLoading && _northCoastProjects.isEmpty) {
-      return SizedBox(
-        height: 180,
-        child: ListView.builder(
-          scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          itemCount: 3,
-          itemBuilder: (context, index) {
-            return Padding(
-              padding: const EdgeInsets.only(right: 12),
-              child: const SkeletonProjectCard(),
-            );
-          },
-        ),
-      );
-    }
-
-    if (_northCoastProjects.isEmpty) {
-      return const SizedBox.shrink();
-    }
-
-    return SizedBox(
-      height: 180,
-      child: ListView.builder(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        itemCount: _northCoastProjects.length,
-        itemBuilder: (context, index) {
-          final project = _northCoastProjects[index];
-          return Padding(
-            padding: EdgeInsets.only(
-                right: index < _northCoastProjects.length - 1 ? 12 : 0),
-            child: _buildLargeProjectCard(
-              project: project,
-            ),
-          );
-        },
-      ),
-    );
-  }
-
   Widget _buildNewCairoProjects() {
-    // Show loading indicator if data is being loaded
-    if (_isLoading && _newCairoProjects.isEmpty) {
-      return SizedBox(
-        height: 180,
-        child: ListView.builder(
-          scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          itemCount: 3,
-          itemBuilder: (context, index) {
-            return Padding(
-              padding: const EdgeInsets.only(right: 12),
-              child: const SkeletonProjectCard(),
-            );
-          },
-        ),
-      );
-    }
-
     if (_newCairoProjects.isEmpty) {
-      return const SizedBox.shrink();
+      return _buildEmptyStateWidget('No projects in New Cairo at the moment', height: 180);
     }
 
     return SizedBox(
@@ -2032,26 +2525,8 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
   }
 
   Widget _buildOctoberProjects() {
-    // Show loading indicator if data is being loaded
-    if (_isLoading && _octoberProjects.isEmpty) {
-      return SizedBox(
-        height: 180,
-        child: ListView.builder(
-          scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          itemCount: 3,
-          itemBuilder: (context, index) {
-            return Padding(
-              padding: const EdgeInsets.only(right: 12),
-              child: const SkeletonProjectCard(),
-            );
-          },
-        ),
-      );
-    }
-
     if (_octoberProjects.isEmpty) {
-      return const SizedBox.shrink();
+      return _buildEmptyStateWidget('No projects in October at the moment', height: 180);
     }
 
     return SizedBox(
@@ -2220,39 +2695,8 @@ class _HomeFeedScreenState extends State<HomeFeedScreen>
   }
 
   Widget _buildUpcomingProjectsList() {
-    if (_isLoading) {
-      return SizedBox(
-        height: 240,
-        child: ListView.builder(
-          scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          itemCount: 3,
-          itemBuilder: (context, index) {
-            return Padding(
-              padding: const EdgeInsets.only(right: 12),
-              child: const SkeletonProjectCard(),
-            );
-          },
-        ),
-      );
-    }
-
     if (_upcomingProjects.isEmpty) {
-      return SizedBox(
-        height: 240,
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Text(
-              'No upcoming projects',
-              style: TextStyle(
-                color: Colors.white.withOpacity(0.5),
-                fontSize: 14,
-              ),
-            ),
-          ),
-        ),
-      );
+      return _buildEmptyStateWidget('No upcoming projects available at the moment', height: 240);
     }
 
     return SizedBox(

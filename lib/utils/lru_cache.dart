@@ -30,6 +30,9 @@ class LRUCache<K, V> {
     _cache[key] = value;
   }
 
+  /// Remove specific entry from cache.
+  V? remove(K key) => _cache.remove(key);
+
   /// Clear all entries.
   void clear() => _cache.clear();
 

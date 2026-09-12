@@ -29,13 +29,21 @@ class HomeApi {
     }
     
     try {
-      // Use the correct endpoint: GET /projects/featured?limit=
-      print('📡 Calling GET /projects/featured?limit=50...');
-      final response = await _dioClient.dio.get('/projects/featured', queryParameters: {'limit': '50'});
+      // Use the correct endpoint: GET /projects/featured?limit=3
+      print('📡 Calling GET /projects/featured?limit=3...');
+      final response = await _dioClient.dio.get('/projects/featured', queryParameters: {'limit': '3'});
       print('📡 Response status: ${response.statusCode}');
       print('📡 Response data type: ${response.data.runtimeType}');
       
-      final list = response.data is List ? response.data as List : <dynamic>[];
+      List<dynamic> list;
+      final responseData = response.data;
+      if (responseData is List) {
+        list = responseData;
+      } else if (responseData is Map && responseData['value'] is List) {
+        list = responseData['value'] as List;
+      } else {
+        list = <dynamic>[];
+      }
       print('📡 Parsed list length: ${list.length}');
       
       if (list.isEmpty) {
@@ -97,7 +105,15 @@ class HomeApi {
       final response = await _dioClient.dio.get('/projects/latest', queryParameters: {'limit': '10'});
       print('📡 Response status: ${response.statusCode}');
       
-      final list = response.data is List ? response.data as List : <dynamic>[];
+      List<dynamic> list;
+      final responseData = response.data;
+      if (responseData is List) {
+        list = responseData;
+      } else if (responseData is Map && responseData['value'] is List) {
+        list = responseData['value'] as List;
+      } else {
+        list = <dynamic>[];
+      }
       print('📡 Parsed list length: ${list.length}');
       
       if (list.isEmpty) {
@@ -152,8 +168,21 @@ class HomeApi {
     }
   }
 
+  Future<List<ProjectModel>>? _continueWatchingInFlight;
+
   /// Uses ProjectApi.getContinueWatchingProjects (backend watch-history + local fallback)
-  Future<List<ProjectModel>> getContinueWatching() async {
+  Future<List<ProjectModel>> getContinueWatching() {
+    if (_continueWatchingInFlight != null) {
+      print('⚡ Coalescing in-flight GET continue-watching request in HomeApi');
+      return _continueWatchingInFlight!;
+    }
+    _continueWatchingInFlight = _fetchContinueWatching().whenComplete(() {
+      _continueWatchingInFlight = null;
+    });
+    return _continueWatchingInFlight!;
+  }
+
+  Future<List<ProjectModel>> _fetchContinueWatching() async {
     try {
       print('🏠 HomeApi: Fetching continue watching...');
       final projects = await _projectApi.getContinueWatchingProjects();
@@ -165,7 +194,7 @@ class HomeApi {
     }
   }
 
-  /// GET /projects/trending?limit=10 (with caching)
+  /// GET /projects/top10?limit=10 (with caching)
   Future<List<ProjectModel>> getTop10Projects({bool useCache = true}) async {
     const cacheKey = 'top10_projects';
     
@@ -178,8 +207,16 @@ class HomeApi {
     }
     
     try {
-      final response = await _dioClient.dio.get('/projects/trending', queryParameters: {'limit': '10'});
-      final list = response.data is List ? response.data as List : <dynamic>[];
+      final response = await _dioClient.dio.get('/projects/top10', queryParameters: {'limit': '10'});
+      List<dynamic> list;
+      final responseData = response.data;
+      if (responseData is List) {
+        list = responseData;
+      } else if (responseData is Map && responseData['value'] is List) {
+        list = responseData['value'] as List;
+      } else {
+        list = <dynamic>[];
+      }
       final projects = list.map((e) => ProjectModel.fromJson(e as Map<String, dynamic>)).toList();
       
       // Cache the results (increased duration to reduce API calls)
@@ -209,7 +246,15 @@ class HomeApi {
     try {
       // Use correct endpoint: GET /projects/location?location=
       final response = await _dioClient.dio.get('/projects/location', queryParameters: {'location': area});
-      final list = response.data is List ? response.data as List : <dynamic>[];
+      List<dynamic> list;
+      final responseData = response.data;
+      if (responseData is List) {
+        list = responseData;
+      } else if (responseData is Map && responseData['value'] is List) {
+        list = responseData['value'] as List;
+      } else {
+        list = <dynamic>[];
+      }
       final projects = list.map((e) => ProjectModel.fromJson(e as Map<String, dynamic>)).toList();
       
       // Cache the results (increased duration to reduce API calls)
@@ -227,8 +272,7 @@ class HomeApi {
     }
   }
 
-  /// GET /projects/status?status=PLANNING (for "upcoming") (with caching)
-  /// Returns only projects with status = PLANNING
+  /// GET /projects/upcoming (with caching)
   Future<List<ProjectModel>> getUpcomingProjects({bool useCache = true}) async {
     const cacheKey = 'upcoming_projects';
     
@@ -236,65 +280,64 @@ class HomeApi {
     if (useCache) {
       final cached = await CacheManager.get<List<dynamic>>(cacheKey);
       if (cached != null) {
-        final projects = cached.map((e) => ProjectModel.fromJson(e as Map<String, dynamic>)).toList();
-        // Filter to ensure only PLANNING status projects (check original JSON status)
-        final filtered = projects.where((p) {
-          // Find the original JSON data for this project
-          final originalJson = cached.firstWhere(
-            (item) => (item as Map<String, dynamic>)['_id']?.toString() == p.id,
-            orElse: () => <String, dynamic>{},
-          ) as Map<String, dynamic>;
-          final status = (originalJson['status']?.toString() ?? '').toUpperCase();
-          return status == 'PLANNING';
-        }).toList();
-        print('📦 Cached upcoming projects (PLANNING): ${filtered.length}');
-        return filtered;
+        return cached.map((e) => ProjectModel.fromJson(e as Map<String, dynamic>)).toList();
       }
     }
     
     try {
-      // Use correct endpoint: GET /projects/status?status=PLANNING
-      print('📡 Fetching upcoming projects (status=PLANNING)...');
-      final response = await _dioClient.dio.get('/projects/status', queryParameters: {'status': 'PLANNING'});
-      final list = response.data is List ? response.data as List : <dynamic>[];
+      print('📡 Fetching upcoming projects (limit=5)...');
+      final response = await _dioClient.dio.get('/projects/upcoming', queryParameters: {'limit': '5'});
+      List<dynamic> list;
+      final responseData = response.data;
+      if (responseData is List) {
+        list = responseData;
+      } else if (responseData is Map && responseData['value'] is List) {
+        list = responseData['value'] as List;
+      } else {
+        list = <dynamic>[];
+      }
+      final projects = list.map((e) => ProjectModel.fromJson(e as Map<String, dynamic>)).toList();
       
-      // Filter to ensure only PLANNING status projects are returned
-      final filteredList = list.where((item) {
-        final json = item as Map<String, dynamic>;
-        final status = (json['status']?.toString() ?? '').toUpperCase();
-        return status == 'PLANNING';
-      }).toList();
+      print('✅ Got ${projects.length} upcoming projects from API');
       
-      final projects = filteredList.map((e) => ProjectModel.fromJson(e as Map<String, dynamic>)).toList();
-      
-      print('✅ Got ${projects.length} upcoming projects (status=PLANNING) from API');
-      
-      // Cache the filtered results (only PLANNING projects) - increased duration to reduce API calls
-      if (useCache && filteredList.isNotEmpty) {
-        await CacheManager.set(cacheKey, filteredList, duration: const Duration(minutes: 30));
+      // Cache the results
+      if (useCache && list.isNotEmpty) {
+        await CacheManager.set(cacheKey, list, duration: const Duration(minutes: 30));
       }
       
       return projects;
     } on DioException catch (e) {
       print('❌ Error getting upcoming projects: ${e.message}');
-      if (e.response != null) {
-        print('   Status: ${e.response?.statusCode}, Data: ${e.response?.data}');
-      }
       return [];
     }
   }
 
-  /// GET /projects/status?status= (for "Upcoming") or /projects/trending (for others)
   Future<List<ProjectModel>> getProjectsByCategory(String category) async {
     try {
       if (category == 'Upcoming') {
-        final response = await _dioClient.dio.get('/projects/status', queryParameters: {'status': 'PLANNING'});
-        final list = response.data is List ? response.data as List : <dynamic>[];
+        final response = await _dioClient.dio.get('/projects/upcoming', queryParameters: {'limit': '50'});
+        List<dynamic> list;
+        final responseData = response.data;
+        if (responseData is List) {
+          list = responseData;
+        } else if (responseData is Map && responseData['value'] is List) {
+          list = responseData['value'] as List;
+        } else {
+          list = <dynamic>[];
+        }
         return list.map((e) => ProjectModel.fromJson(e as Map<String, dynamic>)).toList();
       } else {
-        // For other categories, use trending
-        final response = await _dioClient.dio.get('/projects/trending', queryParameters: {'limit': '50'});
-        final list = response.data is List ? response.data as List : <dynamic>[];
+        // For other categories, use top10
+        final response = await _dioClient.dio.get('/projects/top10', queryParameters: {'limit': '50'});
+        List<dynamic> list;
+        final responseData = response.data;
+        if (responseData is List) {
+          list = responseData;
+        } else if (responseData is Map && responseData['value'] is List) {
+          list = responseData['value'] as List;
+        } else {
+          list = <dynamic>[];
+        }
         return list.map((e) => ProjectModel.fromJson(e as Map<String, dynamic>)).toList();
       }
     } on DioException catch (e) {
@@ -302,16 +345,9 @@ class HomeApi {
     }
   }
 
-  /// GET /developer — requires ADMIN/SUPERADMIN; may 403 for normal users.
+  /// /developer endpoint requires ADMIN/SUPERADMIN on backend; return empty for mobile users to prevent 403.
   Future<List<DeveloperModel>> getDevelopers() async {
-    try {
-      final response = await _dioClient.dio.get('/developer');
-      final list = response.data is List ? response.data as List : <dynamic>[];
-      return list.map((e) => DeveloperModel.fromJson(e as Map<String, dynamic>)).toList();
-    } on DioException catch (e) {
-      print('Error getting developers: ${e.message}');
-      return [];
-    }
+    return [];
   }
 
   /// No /areas in backend; return empty.

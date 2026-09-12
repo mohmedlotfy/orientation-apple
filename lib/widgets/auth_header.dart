@@ -2,23 +2,58 @@ import 'package:flutter/material.dart';
 import 'orientation_logo.dart';
 
 class AuthHeader extends StatelessWidget {
-  const AuthHeader({super.key});
+  final double? height;
+  final double? logoBottom;
+
+  const AuthHeader({
+    super.key,
+    this.height,
+    this.logoBottom,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final screenHeight = MediaQuery.of(context).size.height;
+    // Responsive default: ~27% of screen height, clamped between 190 and 240 to balance space and fit content
+    final effectiveHeight = height ?? (screenHeight * 0.27).clamp(190.0, 240.0);
+    final effectiveLogoBottom = logoBottom ?? 20.0;
+
     return SizedBox(
-      height: 320,
+      height: effectiveHeight,
       width: double.infinity,
       child: Stack(
+        fit: StackFit.expand,
         children: [
-          // Background with geometric shapes
-          const GeometricBackground(),
-          // Logo centered
-          const Positioned(
+          // Background image replacing geometric shapes
+          Image.asset(
+            'assets/images/login_bg.jpg',
+            fit: BoxFit.cover,
+            errorBuilder: (context, error, stackTrace) {
+              // Fallback to black if image is missing
+              return Container(color: Colors.black);
+            },
+          ),
+          // Dark gradient overlay to blend into the black screen below
+          Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  Colors.transparent,
+                  Colors.black.withOpacity(0.4),
+                  Colors.black,
+                ],
+                stops: const [0.25, 0.75, 1.0],
+              ),
+            ),
+          ),
+          // Logo centered at the bottom
+          Positioned(
             left: 0,
             right: 0,
-            bottom: 30,
-            child: Center(
+            bottom: effectiveLogoBottom,
+            child: const Center(
               child: OrientationLogo(),
             ),
           ),
@@ -27,93 +62,3 @@ class AuthHeader extends StatelessWidget {
     );
   }
 }
-
-class GeometricBackground extends StatelessWidget {
-  const GeometricBackground({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return CustomPaint(
-      painter: _GeometricPainter(),
-      size: Size.infinite,
-    );
-  }
-}
-
-class _GeometricPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final scaleX = size.width / 390;
-    final scaleY = size.height / 220;
-
-    void drawRect({
-      required double left,
-      required double top,
-      required double w,
-      required double h,
-      required double rotation,
-      required Color color,
-    }) {
-      final paint = Paint()..color = color;
-
-      canvas.save();
-      canvas.translate(left * scaleX, top * scaleY);
-      canvas.rotate(rotation * 3.1415926535 / 180);
-      canvas.drawRect(
-        Rect.fromLTWH(0, 0, w * scaleX, h * scaleY),
-        paint,
-      );
-      canvas.restore();
-    }
-
-
-    // 🔶 Rectangle 34 (right shape)
-    drawRect(
-      left: 100,      // move right more
-      top: -35,       // move up
-      w: 220,         // bigger
-      h: 95,
-      rotation: -44.7,
-      color: const Color(0xFF170001),
-    );
-
-    // 🔶 Rectangle 32 (left shape)
-    drawRect(
-      left: -170,      // more left
-      top: 10,        // slight down
-      w: 210,         // slightly bigger
-      h: 180,
-      rotation: -44.7,
-      color: const Color(0xFF170001),
-    );
-    // 🔶 Rectangle 33 (center big shape)
-    drawRect(
-      left: 0,       // move slightly right
-      top: 0,       // move up
-      w: 110,         // bigger
-      h: 150,
-      rotation: -44.7,
-      color: const Color(0xFF260002),
-    );
-
-
-
-    // Fade bottom
-    final overlay = Paint()
-      ..shader = LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [
-          Colors.transparent,
-          Colors.black.withOpacity(0.35),
-          Colors.black,
-        ],
-      ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
-
-    canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), overlay);
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
-}
-

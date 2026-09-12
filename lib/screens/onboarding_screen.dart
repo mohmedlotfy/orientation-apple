@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
 import '../widgets/orientation_logo.dart';
-import '../widgets/project_image_grid.dart';
-import '../widgets/language_selector.dart';
 import 'login_screen.dart';
 import 'create_account_screen.dart';
 
@@ -14,9 +12,16 @@ class OnboardingScreen extends StatelessWidget {
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          // Background image grid
-          const Positioned.fill(
-            child: ProjectImageGrid(),
+          // Background image
+          Positioned.fill(
+            child: Image.asset(
+              'assets/images/login_bg.jpg',
+              fit: BoxFit.cover,
+              alignment: Alignment.topCenter,
+              errorBuilder: (context, error, stackTrace) {
+                return Container(color: Colors.black);
+              },
+            ),
           ),
           // Gradient overlay
           Positioned.fill(
@@ -26,13 +31,13 @@ class OnboardingScreen extends StatelessWidget {
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
                   colors: [
-                    Colors.black.withOpacity(0.3),
-                    Colors.black.withOpacity(0.5),
-                    Colors.black.withOpacity(0.85),
+                    Colors.black.withOpacity(0.1),
+                    Colors.black.withOpacity(0.2),
+                    Colors.black.withOpacity(0.7),
                     Colors.black,
                     Colors.black,
                   ],
-                  stops: const [0.0, 0.3, 0.5, 0.65, 1.0],
+                  stops: const [0.0, 0.35, 0.55, 0.7, 1.0],
                 ),
               ),
             ),
@@ -41,14 +46,6 @@ class OnboardingScreen extends StatelessWidget {
           SafeArea(
             child: Column(
               children: [
-                // Language selector
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  child: Align(
-                    alignment: Alignment.topLeft,
-                    child: LanguageSelector(),
-                  ),
-                ),
                 const Spacer(),
                 // Bottom content
                 const OnboardingContent(),

@@ -26,8 +26,9 @@ class _EpisodePlayerScreenState extends State<EpisodePlayerScreen> with WidgetsB
   bool _isLoading = true;
   String? _errorMessage;
   final ProjectApi _projectApi = ProjectApi();
-  Timer? _progressTimer;
   String? _projectId;
+  bool _wasPlaying = false;
+  Duration _lastPosition = Duration.zero;
 
   @override
   void initState() {
@@ -42,12 +43,14 @@ class _EpisodePlayerScreenState extends State<EpisodePlayerScreen> with WidgetsB
     _initializeVideo();
   }
 
+  bool _hasSyncedBackend = false;
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused || 
         state == AppLifecycleState.inactive) {
       _videoController?.pause();
-      _saveCurrentProgress();
+      _saveLocalProgressOnly();
     }
   }
 
@@ -71,7 +74,7 @@ class _EpisodePlayerScreenState extends State<EpisodePlayerScreen> with WidgetsB
 
       await _videoController!.initialize();
 
-      // Load saved progress
+      // Load saved progress from local cache (0 network calls)
       if (_projectId != null) {
         final savedProgress = await _projectApi.getWatchingProgress(
           _projectId!,
@@ -144,12 +147,8 @@ class _EpisodePlayerScreenState extends State<EpisodePlayerScreen> with WidgetsB
         setState(() {
           _isLoading = false;
         });
-        // Add listener to track progress changes
-        _videoController!.addListener(_onVideoPositionChanged);
-        // Start tracking progress
-        _startProgressTracking();
-        // Save initial progress immediately
-        _saveCurrentProgress();
+        // Listen to player events (local progress tracking only - 0 network calls)
+        _videoController!.addListener(_onPlayerStateChanged);
       }
     } catch (e) {
       if (mounted) {
@@ -161,94 +160,90 @@ class _EpisodePlayerScreenState extends State<EpisodePlayerScreen> with WidgetsB
     }
   }
 
-  void _onVideoPositionChanged() {
-    if (_videoController != null && 
-        _projectId != null && 
-        _projectId!.isNotEmpty &&
-        _videoController!.value.isInitialized) {
-      final duration = _videoController!.value.duration;
-      final position = _videoController!.value.position;
-      
-      if (duration.inMilliseconds > 0) {
-        final progress = position.inMilliseconds / duration.inMilliseconds;
-        // Save progress every 2% change (debounce)
-        if (_lastSavedProgress == null || 
-            (progress - _lastSavedProgress!).abs() > 0.02) { // 2% change
-          _lastSavedProgress = progress;
-          print('💾 Saving progress: projectId=$_projectId, episodeId=${widget.episode.id}, progress=${(progress * 100).toStringAsFixed(1)}%');
-          _projectApi.updateEpisodeWatchProgress(
-            projectId: _projectId!,
-            episode: widget.episode,
-            projectTitle: widget.projectTitle,
-            currentTimeSeconds: position.inMilliseconds / 1000.0,
-            durationSeconds: duration.inMilliseconds / 1000.0,
-          );
-        }
-      }
-    } else {
-      if (_projectId == null || _projectId!.isEmpty) {
-        print('❌ Cannot save progress: projectId is null or empty');
-      }
+  Duration _lastDuration = Duration.zero;
+
+  void _onPlayerStateChanged() {
+    if (_videoController == null || !_videoController!.value.isInitialized) return;
+
+    final isPlaying = _videoController!.value.isPlaying;
+    final currentPos = _videoController!.value.position;
+    final currentDur = _videoController!.value.duration;
+    if (currentDur.inMilliseconds > 0) {
+      _lastDuration = currentDur;
     }
+
+    // 1. Save locally on Pause event (0 network calls)
+    if (_wasPlaying && !isPlaying) {
+      print('⏸️ Video paused — saving local watch progress');
+      _saveLocalProgressOnly();
+    }
+    _wasPlaying = isPlaying;
+
+    // 2. Save locally on Seek event (0 network calls)
+    final diff = (currentPos - _lastPosition).inMilliseconds.abs();
+    if (diff > 2000 && _lastPosition != Duration.zero) {
+      print('⏩ Video seeked (${_lastPosition.inSeconds}s -> ${currentPos.inSeconds}s) — saving local watch progress');
+      _saveLocalProgressOnly();
+    }
+    _lastPosition = currentPos;
   }
 
-  double? _lastSavedProgress;
+  /// Saves playback progress strictly to local storage / memory with 0 network calls.
+  Future<void> _saveLocalProgressOnly() async {
+    if (_projectId == null || _projectId!.isEmpty) return;
 
-  void _startProgressTracking() {
-    // Track progress every 2 seconds (for short videos)
-    _progressTimer = Timer.periodic(const Duration(seconds: 2), (timer) {
-      _saveCurrentProgress();
-    });
+    final duration = (_videoController != null && _videoController!.value.isInitialized)
+        ? _videoController!.value.duration
+        : _lastDuration;
+    final position = (_videoController != null && _videoController!.value.isInitialized)
+        ? _videoController!.value.position
+        : _lastPosition;
+    if (duration.inMilliseconds <= 0) return;
+
+    final progress = position.inMilliseconds / duration.inMilliseconds;
+
+    print('💾 Saving local progress (0 network calls): projectId=$_projectId, episodeId=${widget.episode.id}, progress=${(progress * 100).toStringAsFixed(1)}%');
+    await _projectApi.saveLocalWatchProgress(
+      projectId: _projectId!,
+      episodeId: widget.episode.id,
+      currentTimeSeconds: position.inMilliseconds / 1000.0,
+      durationSeconds: duration.inMilliseconds / 1000.0,
+    );
   }
 
-  Future<void> _saveCurrentProgress() async {
-    if (_videoController != null && 
-        _projectId != null && 
-        _projectId!.isNotEmpty &&
-        _videoController!.value.isInitialized) {
-      final duration = _videoController!.value.duration;
-      final position = _videoController!.value.position;
-      
-      if (duration.inMilliseconds > 0) {
-        final progress = position.inMilliseconds / duration.inMilliseconds;
-        print('💾 Timer: Saving progress: projectId=$_projectId, episodeId=${widget.episode.id}, progress=${(progress * 100).toStringAsFixed(1)}%');
-        await _projectApi.updateEpisodeWatchProgress(
-          projectId: _projectId!,
-          episode: widget.episode,
-          projectTitle: widget.projectTitle,
-          currentTimeSeconds: position.inMilliseconds / 1000.0,
-          durationSeconds: duration.inMilliseconds / 1000.0,
-        );
-      }
-    } else {
-      print('❌ Cannot save progress: projectId=${_projectId}, controller=${_videoController != null}, initialized=${_videoController?.value.isInitialized}');
-    }
+  /// Syncs watch progress to backend (POST /watch-history/progress) ONCE upon closing/disposing episode.
+  Future<void> _syncBackendProgressOnce() async {
+    if (_hasSyncedBackend) return;
+    _hasSyncedBackend = true;
+
+    if (_projectId == null || _projectId!.isEmpty) return;
+
+    final duration = (_videoController != null && _videoController!.value.isInitialized)
+        ? _videoController!.value.duration
+        : _lastDuration;
+    final position = (_videoController != null && _videoController!.value.isInitialized)
+        ? _videoController!.value.position
+        : _lastPosition;
+    if (duration.inMilliseconds <= 0) return;
+
+    print('📡 Syncing watch progress to backend ONCE on exit: projectId=$_projectId, episodeId=${widget.episode.id}');
+    await _projectApi.syncEpisodeWatchProgress(
+      projectId: _projectId!,
+      episode: widget.episode,
+      projectTitle: widget.projectTitle,
+      currentTimeSeconds: position.inMilliseconds / 1000.0,
+      durationSeconds: duration.inMilliseconds / 1000.0,
+    );
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _progressTimer?.cancel();
     // Remove listener
-    _videoController?.removeListener(_onVideoPositionChanged);
-    // Save progress before disposing (force save)
-    print('🔄 Disposing - saving final progress...');
-    if (_projectId != null && _projectId!.isNotEmpty && _videoController != null && _videoController!.value.isInitialized) {
-      final duration = _videoController!.value.duration;
-      final position = _videoController!.value.position;
-      if (duration.inMilliseconds > 0) {
-        final progress = position.inMilliseconds / duration.inMilliseconds;
-        print('💾 Force saving on dispose: projectId=$_projectId, episodeId=${widget.episode.id}, progress=${(progress * 100).toStringAsFixed(1)}%');
-        // Don't await - dispose can't be async
-        _projectApi.updateEpisodeWatchProgress(
-          projectId: _projectId!,
-          episode: widget.episode,
-          projectTitle: widget.projectTitle,
-          currentTimeSeconds: position.inMilliseconds / 1000.0,
-          durationSeconds: duration.inMilliseconds / 1000.0,
-        );
-      }
-    }
+    _videoController?.removeListener(_onPlayerStateChanged);
+    // Sync backend progress ONCE when exiting
+    print('🔄 Disposing - syncing backend progress once...');
+    _syncBackendProgressOnce();
     _videoController?.pause();
     // Reset to portrait
     SystemChrome.setPreferredOrientations([

@@ -1,12 +1,12 @@
 import 'dart:io';
 import 'package:dio/dio.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart' as getx;
 import '../models/clip_model.dart';
 import '../reels/reels_screen.dart';
 import '../services/dio_client.dart';
 import '../services/clip_service.dart';
+import '../services/cache_service.dart';
 
 /// Simple Clip API without caching - Pure network calls
 /// Best for: Real-time data, small datasets, or when server handles caching
@@ -552,43 +552,70 @@ class ClipsScreenState extends State<ClipsScreen> {
   final GlobalKey<ReelsScreenState> _reelsKey = GlobalKey<ReelsScreenState>();
   List<ClipModel> _clips = [];
   bool _isLoading = true;
+  bool _hasLoadedOnce = false;
 
   @override
   void initState() {
     super.initState();
-    _loadClips();
+    // Pre-fetch clips in the background immediately so the tab is ready when opened
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadClips(forceRefresh: false);
+    });
   }
 
-  Future<void> _loadClips() async {
+  Future<void> _loadClips({bool forceRefresh = false}) async {
     try {
+      debugPrint('🎬 [ClipsScreen] Loading clips (forceRefresh: $forceRefresh)...');
       if (!getx.Get.isRegistered<ClipService>()) {
+        debugPrint('❌ [ClipsScreen] ClipService is not registered');
         if (mounted) setState(() => _isLoading = false);
         return;
       }
       final clipService = getx.Get.find<ClipService>();
-      final clips = await clipService.getClips(page: 1, limit: 5);
+      // Use limit 50 instead of 5 so newly added reels in the database are not cut off
+      final clips = await clipService.getClips(
+        page: 1,
+        limit: 50,
+        forceRefresh: forceRefresh,
+      );
+      debugPrint('🎬 [ClipsScreen] Received ${clips.length} clips from ClipService');
       if (mounted) {
         setState(() {
           _clips = clips;
           _isLoading = false;
+          _hasLoadedOnce = true;
         });
       }
-    } catch (e) {
-      debugPrint('Error loading clips: $e');
+
+      // Pre-cache thumbnails and initial video files in the background
+      if (clips.isNotEmpty) {
+        CacheService().cacheReelsContent(clips);
+      }
+    } catch (e, st) {
+      debugPrint('❌ [ClipsScreen] Error loading clips: $e\n$st');
       if (mounted) setState(() => _isLoading = false);
     }
   }
 
+  Future<void> refresh() async {
+    setState(() => _isLoading = true);
+    await _loadClips(forceRefresh: true);
+  }
+
   void setVisible(bool visible) {
     _reelsKey.currentState?.setVisible(visible);
+    if (visible && (!_hasLoadedOnce || _clips.isEmpty)) {
+      _hasLoadedOnce = true;
+      _loadClips(forceRefresh: false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
-      return Scaffold(
+      return const Scaffold(
         backgroundColor: Colors.black,
-        body: const Center(
+        body: Center(
             child: CircularProgressIndicator(color: Color(0xFFE50914))),
       );
     }
@@ -596,10 +623,33 @@ class ClipsScreenState extends State<ClipsScreen> {
       return Scaffold(
         backgroundColor: Colors.black,
         body: Center(
-          child: Text(
-            'No Clips Available',
-            style:
-                TextStyle(color: Colors.white.withOpacity(0.7), fontSize: 18),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.video_library_outlined,
+                  color: Colors.white54, size: 54),
+              const SizedBox(height: 16),
+              Text(
+                'No Clips Available',
+                style: TextStyle(
+                    color: Colors.white.withOpacity(0.7), fontSize: 18),
+              ),
+              const SizedBox(height: 20),
+              ElevatedButton.icon(
+                onPressed: refresh,
+                icon: const Icon(Icons.refresh, color: Colors.white, size: 18),
+                label: const Text('Refresh Clips',
+                    style: TextStyle(color: Colors.white)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFE50914),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       );
@@ -608,7 +658,8 @@ class ClipsScreenState extends State<ClipsScreen> {
       key: _reelsKey,
       clips: _clips,
       initialIndex: 0,
-      initialVisible: false,
+      initialVisible: true,
     );
   }
 }
+

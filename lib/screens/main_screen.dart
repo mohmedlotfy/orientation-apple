@@ -16,6 +16,7 @@ class MainScreen extends StatefulWidget {
 
 class _MainScreenState extends State<MainScreen> {
   int _currentIndex = 0;
+  final Set<int> _loadedTabs = {0};
   final GlobalKey<ClipsScreenState> _clipsKey = GlobalKey<ClipsScreenState>();
   final GlobalKey<State<HomeFeedScreen>> _homeKey =
       GlobalKey<State<HomeFeedScreen>>();
@@ -67,17 +68,23 @@ class _MainScreenState extends State<MainScreen> {
           index: _currentIndex,
           children: [
             HomeFeedScreen(key: _homeKey),
-            ClipsScreen(key: _clipsKey),
-            const NewsScreen(),
-            AccountScreen(
-              onProfileUpdated: () {
-                // Refresh user name in HomeFeedScreen
-                final homeState = _homeKey.currentState;
-                if (homeState != null) {
-                  (homeState as dynamic).refreshUserName();
-                }
-              },
-            ),
+            _loadedTabs.contains(1)
+                ? ClipsScreen(key: _clipsKey)
+                : const SizedBox.shrink(),
+            _loadedTabs.contains(2)
+                ? const NewsScreen()
+                : const SizedBox.shrink(),
+            _loadedTabs.contains(3)
+                ? AccountScreen(
+                    onProfileUpdated: () {
+                      // Refresh user name in HomeFeedScreen
+                      final homeState = _homeKey.currentState;
+                      if (homeState != null) {
+                        (homeState as dynamic).refreshUserName();
+                      }
+                    },
+                  )
+                : const SizedBox.shrink(),
           ],
         ),
         bottomNavigationBar: BottomNavBar(
@@ -103,6 +110,7 @@ class _MainScreenState extends State<MainScreen> {
               }
 
               setState(() {
+                _loadedTabs.add(0);
                 _currentIndex = index;
               });
               return;
@@ -120,6 +128,9 @@ class _MainScreenState extends State<MainScreen> {
             final isAuth = await AuthHelper.requireAuth(context);
             if (!isAuth) return;
             if (!mounted) return;
+
+            // Mark tab as loaded
+            _loadedTabs.add(index);
 
             // Update clips visibility
             if (index == 1) {

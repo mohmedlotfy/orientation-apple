@@ -44,28 +44,27 @@ class CacheService {
     debugPrint('✅ CacheService: Home content caching initiated');
   }
 
-  /// Cache all thumbnails and videos from Reels page content
+  /// Cache thumbnails and initial videos from Reels page content
   /// 
-  /// DISABLED: Video caching is disabled to save storage space
-  /// Called in initState() after clips are loaded in Reels page
-  /// Uses CacheManagerReels with 3-day expiration
+  /// Pre-caches thumbnails for fast poster display and the first 3 videos
+  /// in the background without blocking the UI.
   Future<void> cacheReelsContent(List<ClipModel> items) async {
-    // ❌ DISABLED: Video caching is disabled
-    debugPrint('🚫 CacheService: Video caching is DISABLED (${items.length} reel items skipped)');
-    return;
-    
-    // OLD CODE (disabled):
-    // for (final item in items) {
-    //   // Cache thumbnail
-    //   if (item.thumbnail.isNotEmpty && _isValidUrl(item.thumbnail)) {
-    //     _cacheFile(item.thumbnail, CacheManagerReels.instance, 'Reel thumbnail');
-    //   }
-    //   
-    //   // Cache video
-    //   if (item.videoUrl.isNotEmpty && _isValidUrl(item.videoUrl)) {
-    //     _cacheFile(item.videoUrl, CacheManagerReels.instance, 'Reel video');
-    //   }
-    // }
+    if (items.isEmpty) return;
+    debugPrint('🎬 CacheService: Pre-caching thumbnails and initial videos for ${items.length} reels...');
+
+    // 1. Pre-cache thumbnails for first 15 reels (instant poster presentation)
+    for (final item in items.take(15)) {
+      if (item.thumbnail.isNotEmpty && _isValidUrl(item.thumbnail)) {
+        _cacheFile(item.thumbnail, CacheManagerReels.instance, 'Reel thumbnail');
+      }
+    }
+
+    // 2. Pre-cache first 3 video files in background for instant opening
+    for (final item in items.take(3)) {
+      if (item.videoUrl.isNotEmpty && _isValidUrl(item.videoUrl) && !item.isAsset) {
+        _cacheFile(item.videoUrl, CacheManagerReels.instance, 'Reel video');
+      }
+    }
   }
 
   /// Cache ONLY the hero media (image or video) for a specific project

@@ -19,7 +19,11 @@ import '../services/clip_service.dart';
 import '../services/cache_service.dart';
 import '../utils/auth_helper.dart';
 import '../widgets/skeleton_loader.dart';
+import '../widgets/subscription_unlock_dialog.dart';
+import '../config/api_config.dart';
 import '../main.dart'; // Added for routeObserver
+import '../services/project_service.dart';
+import '../services/subscription_service.dart';
 
 class ProjectDetailsScreen extends StatefulWidget {
   final String? projectId;
@@ -29,7 +33,7 @@ class ProjectDetailsScreen extends StatefulWidget {
     super.key,
     this.projectId,
     this.initialTabIndex =
-        0, // 0: Project, 1: Episodes, 2: Inventory, 3: Reels, 4: PDF
+        0, // 0: Project, 1: Episodes, 2: Inventory, 3: Reels, 4: S.V
   });
 
   @override
@@ -48,7 +52,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen>
   static const Color brandGreen = Color(0xFF00C853);
 
   ProjectModel? _project;
-  List<EpisodeModel> _episodes = [];
+  ProjectDetails? _projectDetails;
   List<ClipModel> _clips = [];
   List<PdfFileModel> _pdfFiles = [];
   List<ProjectModel> _relatedProjects = [];
@@ -64,6 +68,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen>
   String _userRole = 'user';
   String _userDeveloperId = '';
   bool _canEditScript = false;
+  bool _isUserSubscribed = false;
 
   @override
   void initState() {
@@ -275,12 +280,48 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen>
     }
   }
 
+  Future<void> _handleRefresh() async {
+    if (widget.projectId == null) return;
+    try {
+      // Re-fetch project details & read global subscription status (0 extra sub network calls)
+      final projectDetails = await ProjectService.getProjectDetails(widget.projectId!, forceRefresh: true);
+      final isSubscribed = SubscriptionService.currentSubscriptionStatus.hasAccess;
+      final hasAccess = isSubscribed || projectDetails.hasAccess;
+      
+      if (mounted) {
+        setState(() {
+          _isUserSubscribed = isSubscribed;
+          _projectDetails = ProjectDetails(
+            id: projectDetails.id,
+            title: projectDetails.title,
+            slug: projectDetails.slug,
+            location: projectDetails.location,
+            description: projectDetails.description,
+            projectThumbnailUrl: projectDetails.projectThumbnailUrl,
+            hasAccess: hasAccess,
+            episodes: projectDetails.episodes,
+          );
+        });
+      }
+    } catch (e) {
+      print('Error refreshing project details: $e');
+    }
+  }
+
+  bool get _isProjectFreeByAge {
+    if (_project == null || _project!.createdAt == null) {
+      return false;
+    }
+    final age = DateTime.now().difference(_project!.createdAt!);
+    return age.inDays > 30;
+  }
+
   Future<void> _loadProjectData() async {
     if (widget.projectId == null) {
       _adVideoController?.pause();
       setState(() {
         _project = null;
-        _episodes = [];
+        _projectDetails = null;
         _clips = [];
         _pdfFiles = [];
         _relatedProjects = [];
@@ -293,17 +334,50 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen>
     }
 
     try {
-      // 1. Fetch main project data
-      final project = await _projectApi.getProjectById(widget.projectId!);
+      // Step 1: Fire main project fetch and sub-fetches in parallel (0 subscription network calls)
+      final projectRawFuture = _projectApi.getProjectRawJson(widget.projectId!);
+      final clipsFuture = _clipService.getProjectClips(widget.projectId!);
+      final pdfFilesFuture = _projectApi.getPdfFiles(widget.projectId!);
+      final isSavedFuture = _projectApi.isProjectSaved(widget.projectId!);
+      final inventoryFuture = _projectApi.getInventoryUrl(widget.projectId!);
 
-      // 2. Fetch all other data sequentially
-      final episodes = await _projectApi.getEpisodes(widget.projectId!);
-      final clips = await _clipService.getProjectClips(widget.projectId!);
-      final pdfFiles = await _projectApi.getPdfFiles(widget.projectId!);
-      final isSaved = await _projectApi.isProjectSaved(widget.projectId!);
-      final inventoryUrl = await _projectApi.getInventoryUrl(widget.projectId!);
+      final results = await Future.wait([
+        projectRawFuture,
+        clipsFuture,
+        pdfFilesFuture,
+        isSavedFuture,
+        inventoryFuture,
+      ]);
 
-      // 3. Handle Developer Projects separately
+      final rawJson = results[0] as Map<String, dynamic>?;
+      final project = rawJson != null ? ProjectModel.fromJson(rawJson) : null;
+      // Synchronously read global subscription status (0ms latency, 0 network calls)
+      final isSubscribed = SubscriptionService.currentSubscriptionStatus.hasAccess;
+      final rawDetails = rawJson != null
+          ? ProjectDetails.fromJson(rawJson)
+          : ProjectDetails(
+              id: widget.projectId!,
+              title: '',
+              slug: '',
+              hasAccess: false,
+              episodes: [],
+            );
+      final projectDetails = ProjectDetails(
+        id: rawDetails.id,
+        title: rawDetails.title,
+        slug: rawDetails.slug,
+        location: rawDetails.location,
+        description: rawDetails.description,
+        projectThumbnailUrl: rawDetails.projectThumbnailUrl,
+        hasAccess: isSubscribed || rawDetails.hasAccess,
+        episodes: rawDetails.episodes,
+      );
+      final clips = results[1] as List<ClipModel>;
+      final pdfFiles = results[2] as List<PdfFileModel>;
+      final isSaved = results[3] as bool;
+      final inventoryUrl = results[4] as String?;
+
+      // Step 2: Only developer projects depend on project.developerId
       List<ProjectModel> relatedProjects = [];
       if (project != null && project.developerId.isNotEmpty) {
         try {
@@ -326,8 +400,9 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen>
 
       if (mounted) {
         setState(() {
+          _isUserSubscribed = isSubscribed;
           _project = project;
-          _episodes = episodes;
+          _projectDetails = projectDetails;
           _clips = clips;
           _pdfFiles = pdfFiles;
           _relatedProjects = relatedProjects;
@@ -1500,7 +1575,7 @@ ${_project!.script.isNotEmpty ? _project!.script : _project!.description}
               Tab(text: 'Episodes'),
               Tab(text: 'Inventory'),
               Tab(text: 'Reels'),
-              Tab(text: 'PDF'),
+              Tab(text: 'S.V'),
             ],
           ),
           // Tab content
@@ -1617,62 +1692,94 @@ ${_project!.script.isNotEmpty ? _project!.script : _project!.description}
   }
 
   Widget _buildEpisodesTab() {
-    if (_episodes.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.video_library_outlined,
-              color: Colors.white.withOpacity(0.3),
-              size: 60,
+    final episodes = _projectDetails?.episodes ?? [];
+    if (episodes.isEmpty) {
+      return RefreshIndicator(
+        onRefresh: _handleRefresh,
+        color: brandRed,
+        backgroundColor: const Color(0xFF141414),
+        child: SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          child: Container(
+            height: MediaQuery.of(context).size.height * 0.4,
+            alignment: Alignment.center,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.video_library_outlined,
+                  color: Colors.white.withOpacity(0.3),
+                  size: 60,
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'No episodes available',
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.5),
+                    fontSize: 16,
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 16),
-            Text(
-              'No episodes available',
-              style: TextStyle(
-                color: Colors.white.withOpacity(0.5),
-                fontSize: 16,
-              ),
-            ),
-          ],
+          ),
         ),
       );
     }
 
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: _episodes.length,
-      itemBuilder: (context, index) {
-        final episode = _episodes[index];
-        return _EpisodeItem(
-          episodeNumber: episode.episodeNumber,
-          duration: episode.duration,
-          title: episode.title,
-          thumbnail: episode.thumbnail,
-          isAsset: episode.isAsset,
-          onTap: () async {
-            final isAuth = await AuthHelper.requireAuth(context);
-            if (!isAuth) return;
+    return RefreshIndicator(
+      onRefresh: _handleRefresh,
+      color: brandRed,
+      backgroundColor: const Color(0xFF141414),
+      child: ListView.builder(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(16),
+        itemCount: episodes.length,
+        itemBuilder: (context, index) {
+          final episode = episodes[index];
+          final hasAccess = (_projectDetails?.hasAccess ?? false) || _isUserSubscribed;
+          // Backend isLocked must be respected: non-subscribed users cannot watch locked episodes.
+          final isLocked = !hasAccess && episode.isLocked;
 
-            final result = await Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (context) => EpisodePlayerScreen(
-                  episode: episode,
-                  projectTitle: _project?.title ?? '',
+          debugPrint('🎬 [EpisodeLock] Ep #${episode.episodeNumber} "${episode.title}": episode.isLocked=${episode.isLocked}, _isProjectFreeByAge=$_isProjectFreeByAge, hasAccess=$hasAccess (_isUserSubscribed=$_isUserSubscribed, projectHasAccess=${_projectDetails?.hasAccess}) -> FINAL isLocked=$isLocked');
+
+          return _EpisodeItem(
+            episodeNumber: episode.episodeNumber,
+            duration: episode.duration ?? '',
+            title: episode.title,
+            thumbnail: episode.thumbnail ?? '',
+            isAsset: episode.isAsset,
+            isLocked: isLocked,
+            onTap: () async {
+              final isAuth = await AuthHelper.requireAuth(context);
+              if (!isAuth || !mounted || !context.mounted) return;
+
+              if (isLocked) {
+                SubscriptionUnlockDialog.show(
+                  context,
+                  subscribeUrl: ApiConfig.checkoutUrl,
+                );
+                return;
+              }
+
+              final result = await Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => EpisodePlayerScreen(
+                    episode: episode.toEpisodeModel(widget.projectId ?? ''),
+                    projectTitle: _project?.title ?? '',
+                  ),
                 ),
-              ),
-            );
-            // Progress should be saved automatically when EpisodePlayerScreen disposes
-            print('✅ Returned from Episode Player - progress should be saved');
-            // Return true to indicate that watch progress was updated
-            if (mounted && result == true) {
-              Navigator.pop(context, true); // Pass result to parent screen
-            }
-          },
-        );
-      },
+              );
+              // Progress should be saved automatically when EpisodePlayerScreen disposes
+              print('✅ Returned from Episode Player - progress should be saved');
+              // Return true to indicate that watch progress was updated
+              if (mounted && result == true) {
+                Navigator.pop(context, true); // Pass result to parent screen
+              }
+            },
+          );
+        },
+      ),
     );
   }
 
@@ -1828,13 +1935,13 @@ ${_project!.script.isNotEmpty ? _project!.script : _project!.description}
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Icon(
-                Icons.picture_as_pdf_outlined,
+                Icons.video_library_rounded,
                 color: Colors.white.withOpacity(0.3),
                 size: 60,
               ),
               const SizedBox(height: 20),
               Text(
-                'No PDF Files Available',
+                'No Sales Videos Available',
                 style: TextStyle(
                   color: Colors.white.withOpacity(0.7),
                   fontSize: 18,
@@ -1843,7 +1950,7 @@ ${_project!.script.isNotEmpty ? _project!.script : _project!.description}
               ),
               const SizedBox(height: 10),
               Text(
-                'PDF files for this project will appear here',
+                'Sales videos for this project will appear here',
                 style: TextStyle(
                   color: Colors.white.withOpacity(0.4),
                   fontSize: 13,
@@ -2159,6 +2266,7 @@ class _EpisodeItem extends StatelessWidget {
   final String title;
   final String thumbnail;
   final bool isAsset;
+  final bool isLocked;
   final VoidCallback? onTap;
 
   const _EpisodeItem({
@@ -2167,6 +2275,7 @@ class _EpisodeItem extends StatelessWidget {
     this.title = '',
     this.thumbnail = '',
     this.isAsset = false,
+    this.isLocked = false,
     this.onTap,
   });
 
@@ -2236,21 +2345,21 @@ class _EpisodeItem extends StatelessWidget {
                 ],
               ),
             ),
-            // Play button
+            // Lock or Play button
             Container(
               width: 38,
               height: 38,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 border: Border.all(
-                  color: Colors.white.withOpacity(0.3),
+                  color: isLocked ? Colors.white.withOpacity(0.15) : Colors.white.withOpacity(0.3),
                   width: 1.5,
                 ),
               ),
-              child: const Icon(
-                Icons.play_arrow,
-                color: Colors.white,
-                size: 22,
+              child: Icon(
+                isLocked ? Icons.lock_outline : Icons.play_arrow,
+                color: isLocked ? Colors.white.withOpacity(0.4) : Colors.white,
+                size: isLocked ? 18 : 22,
               ),
             ),
           ],

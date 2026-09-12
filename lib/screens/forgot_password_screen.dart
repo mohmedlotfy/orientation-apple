@@ -3,6 +3,7 @@ import 'dart:async';
 import '../widgets/auth_header.dart';
 import '../widgets/custom_text_field.dart';
 import '../services/api/auth_api.dart';
+import '../utils/validators.dart';
 import 'otp_screen.dart';
 
 class ForgotPasswordScreen extends StatefulWidget {
@@ -61,12 +62,6 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     return '$minutes:$seconds';
   }
 
-  // Email validation regex
-  bool _isValidEmail(String email) {
-    final emailRegex = RegExp(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$');
-    return emailRegex.hasMatch(email);
-  }
-
   Future<void> _handleSendCode() async {
     final email = _emailController.text.trim();
     
@@ -77,7 +72,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
       return;
     }
 
-    if (!_isValidEmail(email)) {
+    if (!Validators.isEmail(email)) {
       setState(() {
         _errorMessage = 'Please enter a valid email address';
       });

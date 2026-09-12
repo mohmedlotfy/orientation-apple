@@ -76,18 +76,17 @@ class _SavedScreenState extends State<SavedScreen>
     });
 
     try {
-      // 1. Get saved reels (might have missing fields from some endpoints)
+      // 1. Get saved reels
       final savedReels = await _clipService.getSavedReels();
 
-      // 2. Hydrate only the clips we need (parallel getClipById - no loading all clips)
+      // 2. Hydrate only reels with missing thumbnails
       final hydratedReels = await Future.wait(
         savedReels.map((saved) async {
-          final full = await _clipService.getClipById(saved.id);
-          if (full != null &&
-              (saved.thumbnail.isEmpty && full.thumbnail.isNotEmpty)) {
-            return full;
+          if (saved.thumbnail.isEmpty) {
+            final full = await _clipService.getClipById(saved.id);
+            return full ?? saved;
           }
-          return full ?? saved;
+          return saved;
         }),
       );
 

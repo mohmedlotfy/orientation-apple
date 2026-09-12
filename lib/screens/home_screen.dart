@@ -396,9 +396,18 @@ class DrawerHeader extends StatelessWidget {
       height: 180,
       width: double.infinity,
       child: Stack(
+        fit: StackFit.expand,
         children: [
-          // Geometric background
-          const GeometricBackground(),
+          // Dark gradient background
+          Container(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF260002), Color(0xFF170001)],
+              ),
+            ),
+          ),
           // Logo
           const Positioned(
             left: 24,

@@ -3,6 +3,7 @@ import 'dart:async';
 import '../widgets/auth_header.dart';
 import '../widgets/custom_text_field.dart';
 import '../services/api/auth_api.dart';
+import '../utils/validators.dart';
 import 'change_password_screen.dart';
 import 'login_screen.dart';
 
@@ -94,7 +95,7 @@ class _OtpScreenState extends State<OtpScreen> {
   }
 
   Future<void> _handleVerifyOtp() async {
-    if (_otpCode.length != 4) {
+    if (!Validators.isOtp(_otpCode)) {
       setState(() {
         _errorMessage = 'Please enter the 4-digit code';
       });
